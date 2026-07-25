@@ -411,6 +411,71 @@ def scan_models():
         dpg.set_value("w_model", items[0])
 
 
+# --- model import / export -------------------------------------------------------
+def _file_dialog(tag, callback, default_filename=""):
+    """(Re)create a modal .zip file dialog and show it."""
+    if dpg.does_item_exist(tag):
+        dpg.delete_item(tag)
+    with dpg.file_dialog(directory_selector=False, show=True, modal=True,
+                         callback=callback, tag=tag, width=720, height=420,
+                         default_path=os.path.expanduser("~"),
+                         default_filename=default_filename):
+        dpg.add_file_extension(".zip", color=(140, 220, 140, 255))
+        dpg.add_file_extension(".*")
+
+
+def open_import():
+    _file_dialog("fd_import", on_import_file)
+
+
+def open_export():
+    sel = dpg.get_value("w_model")
+    src = G["models"].get(sel)
+    if not src:
+        status("no model selected to export", ok=False)
+        return
+    G["export_src"] = src
+    _file_dialog("fd_export", on_export_file,
+                 default_filename=os.path.basename(src))
+
+
+def on_import_file(sender, app_data):
+    path = (app_data or {}).get("file_path_name", "")
+    if not path or not os.path.isfile(path):
+        status("import cancelled: file not found", ok=False)
+        return
+    base = os.path.splitext(os.path.basename(path))[0]
+    ckpt_dir = os.path.join(ROOT, "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    dst = os.path.join(ckpt_dir, base + ".zip")
+    if os.path.abspath(path) != os.path.abspath(dst):
+        if os.path.exists(dst):                    # never clobber an existing model
+            dst = os.path.join(ckpt_dir, f"{base}_{time.strftime('%H%M%S')}.zip")
+        shutil.copyfile(path, dst)
+    scan_models()
+    dpg.set_value("w_model", os.path.relpath(dst, ROOT))
+    try:
+        runner.load_policy(dst)
+        status(f"imported {os.path.basename(dst)} - verified, ready to fly")
+    except RuntimeError as e:                      # kept on disk, flagged clearly
+        status(f"imported {os.path.basename(dst)}, but it failed verification: {e}",
+               ok=False)
+
+
+def on_export_file(sender, app_data):
+    path = (app_data or {}).get("file_path_name", "")
+    src = G.get("export_src")
+    if not path or not src:
+        return
+    if not path.lower().endswith(".zip"):
+        path += ".zip"
+    try:
+        shutil.copyfile(src, path)
+        status(f"exported {os.path.basename(src)} -> {path}")
+    except OSError as e:
+        status(f"export failed: {e}", ok=False)
+
+
 def start_live():
     sel = dpg.get_value("w_model")
     try:
@@ -768,6 +833,11 @@ def build():
                 with dpg.group(horizontal=True):
                     dpg.add_button(label="Rescan", callback=lambda: scan_models())
                     dpg.add_button(label="START LIVE RUN", callback=lambda: start_live())
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label="Import model...", width=163,
+                                   callback=lambda: open_import())
+                    dpg.add_button(label="Export model...", width=163,
+                                   callback=lambda: open_export())
                 dpg.add_text("", tag="w_status", wrap=330)
                 dpg.add_separator()
                 dpg.add_text("TRAINING", color=(255, 200, 90))
@@ -865,6 +935,21 @@ def main():
             for _ in range(15):
                 update()
                 dpg.render_dearpygui_frame()
+        # import/export round-trip through the real callbacks, then clean up
+        src = G["models"].get(dpg.get_value("w_model"))
+        if src:
+            G["export_src"] = src
+            exp = os.path.join(os.environ.get("TEMP", ROOT),
+                               "dronegym_smoke_export.zip")
+            on_export_file(None, {"file_path_name": exp})
+            assert os.path.isfile(exp), "export failed"
+            on_import_file(None, {"file_path_name": exp})
+            imported = os.path.join(ROOT, "checkpoints", "dronegym_smoke_export.zip")
+            assert os.path.isfile(imported), "import failed"
+            os.remove(imported)
+            os.remove(exp)
+            scan_models()
+            print("import/export round-trip OK")
         print("SMOKE OK")
         dpg.destroy_context()
         return
