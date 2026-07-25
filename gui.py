@@ -572,15 +572,21 @@ def start_training():
     logf = open(log_path, "w")
     cmd = [sys.executable, os.path.join(ROOT, "train.py"), "--config", cfg_arg,
            "--steps", str(steps), "--run-name", run_name, "--difficulty", "0"]
+    intercept = dpg.get_value("w_scen") == "Intercept"
+    spd = float(dpg.get_value("w_tspeed"))
+    if intercept:                          # SCENARIO toggle drives training too
+        cmd += ["--scenario", "intercept", "--target-speed", str(spd)]
     flags = 0x08000000 if os.name == "nt" else 0        # CREATE_NO_WINDOW
     G["train_proc"] = subprocess.Popen(cmd, cwd=ROOT, stdout=logf,
                                        stderr=subprocess.STDOUT,
                                        creationflags=flags)
     G["train_logf"] = logf
     G["train_meta"] = {"run": run_name, "steps": steps, "t0": time.time(),
-                       "log": log_path, "cfg_name": cfg["name"], "stamp": stamp}
+                       "log": log_path, "cfg_name": cfg["name"], "stamp": stamp,
+                       "tag": f"int{spd:g}_" if intercept else ""}
     dpg.configure_item("w_train", enabled=False)
-    tstatus(f"training {run_name} ({steps:,} steps @ level 0)...")
+    scen_txt = f"intercept @{spd:g} m/s" if intercept else "static"
+    tstatus(f"training {run_name} ({steps:,} steps @ level 0, {scen_txt})...")
 
 
 def poll_training():
@@ -611,7 +617,8 @@ def poll_training():
     if not os.path.isfile(src):                         # eval fires every 50k steps
         src = os.path.join(run_dir, "final_model.zip")
     dst = os.path.join(ROOT, "checkpoints",
-                       f"{meta['cfg_name']}_{meta['stamp']}_{meta['steps'] // 1000}k.zip")
+                       f"{meta['cfg_name']}_{meta.get('tag', '')}"
+                       f"{meta['stamp']}_{meta['steps'] // 1000}k.zip")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copyfile(src, dst)
     scan_models()
