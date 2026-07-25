@@ -32,6 +32,8 @@ MODEL_DIRS = ("checkpoints", "models")
 ISO_W, ISO_H = 580, 540
 FPV_W, FPV_H = 400, 560
 FPV_SQ = 380
+ATT_W, ATT_H = 270, 560
+ATT_SQ = 250
 MAX_RATE_DEG = np.degrees(getattr(runner.PHYS, "MAX_RATE", 10.0))  # full stick
 
 G = {"mode": "idle", "ep": None, "run": None, "fidx": 0.0, "playing": False,
@@ -253,6 +255,63 @@ def current_cfg():
             "frame_size_mm": float(dpg.get_value("w_frame"))}
 
 
+def _euler_deg(q):
+    """Quaternion -> (roll, pitch, yaw) degrees. Aviation display signs:
+    roll + = right bank, pitch + = nose up, yaw + = nose left (CCW from +x)."""
+    R = _quat_to_rot(np.asarray(q, dtype=float))
+    roll = np.degrees(np.arctan2(R[2, 1], R[2, 2]))
+    pitch = np.degrees(np.arcsin(np.clip(R[2, 0], -1.0, 1.0)))
+    yaw = np.degrees(np.arctan2(R[1, 0], R[0, 0]))
+    return roll, pitch, yaw
+
+
+def draw_att(quat=None):
+    """Centered 3D drone at fixed scale: pure attitude, no translation."""
+    L = "att_layer"
+    dpg.delete_item(L, children_only=True)
+    x0, y0, sq = 10, 34, ATT_SQ
+    cx, cy = x0 + sq / 2, y0 + sq / 2
+    dpg.draw_text((x0, 8), "ATTITUDE", size=15, color=(255, 200, 90), parent=L)
+    dpg.draw_rectangle((x0, y0), (x0 + sq, y0 + sq), fill=(13, 16, 22),
+                       color=(70, 75, 90), parent=L)
+    k = 62.0
+
+    def px(v):                             # same iso camera as the world view
+        u = (v[0] - v[1]) * IsoView.C
+        w = (v[0] + v[1]) * IsoView.S - v[2]
+        return (cx + k * u, cy + k * w)
+
+    # world-fixed reference: ground ring + world +x / +y axes
+    ring = [px((1.35 * np.cos(a), 1.35 * np.sin(a), 0))
+            for a in np.linspace(0, 2 * np.pi, 41)]
+    dpg.draw_polyline(ring, color=(50, 55, 70), parent=L)
+    dpg.draw_line(px((0, 0, 0)), px((1.35, 0, 0)), color=(80, 86, 105), parent=L)
+    dpg.draw_text(px((1.62, 0, 0)), "+X", size=12, color=(80, 86, 105), parent=L)
+    dpg.draw_line(px((0, 0, 0)), px((0, 1.35, 0)), color=(60, 66, 84), parent=L)
+
+    if quat is None:
+        quat = (1.0, 0.0, 0.0, 0.0)
+    R = _quat_to_rot(np.asarray(quat, dtype=float))
+    for sx, sy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+        tip = R @ np.array([0.72 * sx, 0.72 * sy, 0.0])
+        col = (240, 90, 90) if sx > 0 else (205, 205, 220)
+        tp = px(tip)
+        dpg.draw_line(px((0, 0, 0)), tp, color=col, thickness=4, parent=L)
+        dpg.draw_circle(tp, 5, fill=col, color=(0, 0, 0, 0), parent=L)
+    up = R @ np.array([0.0, 0.0, 0.5])     # body-z strut makes tilt readable
+    dpg.draw_line(px((0, 0, 0)), px(up), color=(120, 200, 140), thickness=2, parent=L)
+    nose = R @ np.array([1.15, 0.0, 0.0])
+    dpg.draw_arrow(px(nose), px((0, 0, 0)), color=(255, 220, 90),
+                   thickness=2, size=8, parent=L)
+
+    roll, pitch, yaw = _euler_deg(quat)
+    ty = y0 + sq + 12
+    for name, val in (("ROLL", roll), ("PITCH", pitch), ("YAW", yaw)):
+        dpg.draw_text((x0, ty), f"{name:<6s}{val:+7.1f} deg", size=15,
+                      color=(200, 205, 215), parent=L)
+        ty += 22
+
+
 def run_target(run):
     """Target info from a run dict; tolerates the pre-intercept format."""
     t = run["target"]
@@ -418,6 +477,7 @@ def render():
                  [f"LIVE   t={ep.t:5.2f}s   dist={d:4.1f}m", hud2,
                   f"reward {ep.total_reward:8.1f}"],
                  act=ep.traj["act"][-1])
+        draw_att(ep.state["quat"])
     elif G["mode"] == "replay" and G["run"]:
         run, tr = G["run"], G["run"]["traj"]
         i = min(int(G["fidx"]), len(tr["pos"]) - 1)
@@ -442,10 +502,12 @@ def render():
                   f"{run['drone'].get('name', '?')}  |  {run.get('model', '?')}",
                   f"{verdict}   reward {run.get('total_reward', 0):.0f}"],
                  act=acts[i] if acts and i < len(acts) else None)
+        draw_att(tr["quat"][i])
     else:
         draw_iso()
         draw_fpv(None, ["Configure a drone, pick a trained model, START LIVE RUN.",
                         "Or select a saved run below and PLAY SELECTED."])
+        draw_att()
 
 
 # --- UI construction --------------------------------------------------------------
@@ -505,6 +567,8 @@ def build():
                         dpg.add_draw_layer(tag="iso_layer")
                     with dpg.drawlist(width=FPV_W, height=FPV_H, tag="fpv_dl"):
                         dpg.add_draw_layer(tag="fpv_layer")
+                    with dpg.drawlist(width=ATT_W, height=ATT_H, tag="att_dl"):
+                        dpg.add_draw_layer(tag="att_layer")
                 with dpg.group(horizontal=True):
                     dpg.add_button(label="Play", tag="w_play", width=72, callback=on_play)
                     dpg.add_slider_int(tag="w_scrub", width=560, min_value=0,
@@ -536,7 +600,7 @@ def main():
     smoke = "--smoke" in sys.argv
     G["presets"] = load_presets()
     dpg.create_context()
-    dpg.create_viewport(title="DroneGym", width=1340, height=880)
+    dpg.create_viewport(title="DroneGym", width=1660, height=880)
     build()
     dpg.setup_dearpygui()
     dpg.show_viewport()
