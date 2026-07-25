@@ -1,9 +1,13 @@
-"""Episode runner: steps physics + camera into the 12-dim obs contract,
-records trajectories to runs/*.json, ranks them, loads policies.
+"""Episode runner: the bridge between the GUI and the real training env.
 
-Used by the GUI for live runs and replays; evaluate.py will reuse it.
-Automatically prefers the real dronegym.physics / dronegym.rewards modules
-when they exist; falls back to the stubs so this branch works standalone.
+Wraps DroneTargetEnv (the single source of truth for physics stepping, obs
+building, actions, rewards, termination) and replicates train.py's
+VecFrameStack so a policy sees exactly what it saw in training:
+OBS_DIM x N_STACK = 12 x 4 = 48 dims, newest frame last, zero-padded at reset.
+Records every flight to runs/*.json for the GUI's replay browser.
+
+The intercept scenario (README v2) lives here as a small subclass until it
+graduates into env.py.
 """
 
 import json
@@ -12,150 +16,152 @@ import time
 
 import numpy as np
 
-from dronegym.camera import get_bbox, _quat_to_rot
-
-# --- backend selection: real modules win the moment teammates push them ----
-from dronegym import stub_physics
-
-try:
-    from dronegym import physics as _phys
-    PHYS = _phys if all(hasattr(_phys, f) for f in ("derive_params", "make_state", "step")) else stub_physics
-except ImportError:
-    PHYS = stub_physics
-
-try:
-    from dronegym.rewards import compute_reward as _real_reward
-except ImportError:
-    _real_reward = None
+from dronegym import physics
+from dronegym.env import TARGET_MIN_Z, DroneTargetEnv
+from dronegym.task import (ACTION_REPEAT, MAX_EPISODE_STEPS, N_STACK, OBS_DIM,
+                           PHYSICS_DT, TARGET_RADIUS)
 
 RUNS_DIR = "runs"
-DT = 0.02
-MAX_T = 12.0
-HIT_MARGIN = 0.15
+DT = ACTION_REPEAT * PHYSICS_DT            # policy-rate timestep: 0.02 s
+MAX_T = MAX_EPISODE_STEPS * DT             # 10 s episode cap
+
+
+class InterceptTargetEnv(DroneTargetEnv):
+    """README v2: constant-velocity target + `escaped` termination.
+
+    Reuses the static env's spawn machinery, then pushes the target out to
+    intercept range along its sampled bearing (which preserves the visibility
+    contract) and aims it to cross within ~6 m of the drone.
+    """
+
+    ESCAPE_RANGE = 40.0
+
+    def __init__(self, cfg, difficulty=0, target_speed=None):
+        super().__init__(cfg, difficulty)
+        self._speed_req = target_speed
+        self.target_vel = np.zeros(3)
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        rng = self.np_random
+        drone = self.state[physics.POS]
+
+        bearing = self.target_pos - drone
+        bearing /= max(np.linalg.norm(bearing), 1e-9)
+        d = rng.uniform(12.0, 20.0)
+        if bearing[2] < 0.0:                # don't push the target underground
+            d = min(d, (TARGET_MIN_Z - drone[2]) / bearing[2])
+        self.target_pos = drone + bearing * max(d, 2.0)
+
+        speed = float(self._speed_req) if self._speed_req else rng.uniform(2.0, 10.0)
+        aim = drone + np.array([rng.uniform(-6, 6), rng.uniform(-6, 6), 0.0])
+        heading = aim - self.target_pos
+        heading[2] = 0.0
+        n = np.linalg.norm(heading)
+        heading = heading / n if n > 1e-6 else np.array([1.0, 0.0, 0.0])
+        self.target_vel = heading * speed
+
+        obs, bbox = self._build_obs()       # target moved: rebuild first frame
+        self._ever_seen = bool(bbox[3] > 0.5)
+        info["distance"] = self._distance()
+        return obs, info
+
+    def step(self, action):
+        self.target_pos = self.target_pos + self.target_vel * DT
+        prev_dist = self._distance()
+        obs, reward, terminated, truncated, info = super().step(action)
+        if (not (terminated or truncated)
+                and info["distance"] > self.ESCAPE_RANGE
+                and info["distance"] > prev_dist):
+            terminated = True
+            info["event"] = "escaped"
+            info["success"] = False
+            info["terms_sum"] = dict(self._terms_sum)
+        return obs, reward, terminated, truncated, info
 
 
 class EpisodeRunner:
     """One episode, steppable frame-by-frame (for the GUI) or all at once."""
 
     def __init__(self, cfg, policy, scenario="static", target_speed=None,
-                 target_pos=None, target_radius=0.5, model_name="?", rng=None):
-        rng = rng or np.random.default_rng()
-        self.cfg = dict(cfg)
+                 difficulty=0, model_name="?", seed=None):
+        self.cfg = dict(cfg)               # raw dict, kept for run JSON / labels
         self.policy = policy
         self.model_name = model_name
         self.scenario = scenario
-        self.params = PHYS.derive_params(cfg)
 
+        dcfg = physics.derive_params(dict(cfg))
         if scenario == "intercept":
-            # README v2 spec: target spawns 12-20 m out, flies a level
-            # constant-velocity line passing within ~6 m of the drone spawn
-            bearing = rng.uniform(-1.0, 1.0)
-            dist = rng.uniform(12.0, 20.0)
-            target_pos = np.array([dist * np.cos(bearing), dist * np.sin(bearing),
-                                   rng.uniform(1.5, 3.5)])
-            r, th = rng.uniform(0.0, 6.0), rng.uniform(0.0, 2 * np.pi)
-            aim = np.array([r * np.cos(th), r * np.sin(th), target_pos[2]])
-            d = aim - target_pos
-            d[2] = 0.0
-            d /= max(np.linalg.norm(d), 1e-6)
-            speed = float(target_speed) if target_speed else rng.uniform(2.0, 10.0)
-            self.target_vel = d * speed
+            self.env = InterceptTargetEnv(dcfg, difficulty, target_speed)
         else:
-            self.target_vel = np.zeros(3)
-            if target_pos is None:
-                bearing = rng.uniform(-0.5, 0.5)      # rad, roughly ahead
-                dist = rng.uniform(7.0, 10.0)
-                target_pos = [dist * np.cos(bearing), dist * np.sin(bearing),
-                              rng.uniform(1.5, 3.5)]
-        self.target0 = np.asarray(target_pos, dtype=float)
-        self.target = self.target0.copy()
-        self.target_radius = target_radius
-        self.drone_radius = cfg["frame_size_mm"] / 2000.0   # frame half-span, m
+            self.env = DroneTargetEnv(dcfg, difficulty)
 
-        self.state = PHYS.make_state([0.0, 0.0, 1.5], yaw=0.0)
+        obs, info = self.env.reset(seed=seed)
+        # VecFrameStack semantics: zeros at reset except the newest slot (last).
+        self._stack = np.zeros(OBS_DIM * N_STACK, dtype=np.float32)
+        self._stack[-OBS_DIM:] = obs
+
+        self.target0 = self.env.target_pos.copy()
+        self.target_vel = np.asarray(getattr(self.env, "target_vel", np.zeros(3)),
+                                     dtype=float)
+        self.target_radius = TARGET_RADIUS
         self.t = 0.0
         self.done = False
-        self.outcome = None                # 'hit' | 'crash' | 'timeout' | 'escaped'
+        self.outcome = None    # 'hit' | 'crash' | 'oob' | 'tumble' | 'lost'
+        #                        | 'escaped' | 'timeout'
         self.total_reward = 0.0
-        self.closest = self._dist()
-        self._prev_bbox = self.bbox()      # for obs 12-13: bbox drift rate
-        self._drift = np.zeros(2)
+        self.closest = info["distance"]
         self.traj = {"pos": [], "quat": [], "bbox": [], "t": [], "act": []}
-        self._record_frame()
+        self._record_frame(obs[0:4], None)
 
-    # -- helpers -------------------------------------------------------------
-    def _dist(self):
-        return float(np.linalg.norm(self.target - self.state["pos"]))
+    # -- gui-facing views ------------------------------------------------------
+    @property
+    def state(self):
+        return {"pos": self.env.state[physics.POS],
+                "quat": self.env.state[physics.QUAT]}
 
-    def bbox(self):
-        return get_bbox(self.state["pos"], self.state["quat"], self.target,
-                        self.target_radius, self.cfg["cam_angle_deg"])
+    @property
+    def target(self):
+        return self.env.target_pos
 
     def obs(self):
-        s = self.state
-        R = _quat_to_rot(s["quat"])
-        g_body = R.T @ np.array([0.0, 0.0, -1.0])
-        v_body = R.T @ s["vel"]
-        return np.concatenate([self.bbox(), s["rates"], g_body,
-                               [v_body[0], v_body[2]],
-                               self._drift]).astype(np.float32)
+        """Stacked observation exactly as the policy sees it (48,)."""
+        return self._stack.copy()
 
-    def _record_frame(self, action=None):
-        self.traj["pos"].append(self.state["pos"].tolist())
-        self.traj["quat"].append(self.state["quat"].tolist())
-        self.traj["bbox"].append(self.bbox().tolist())
+    # -- stepping ---------------------------------------------------------------
+    def _record_frame(self, bbox, action):
+        s = self.env.state
+        self.traj["pos"].append(s[physics.POS].tolist())
+        self.traj["quat"].append(s[physics.QUAT].tolist())
+        self.traj["bbox"].append([float(b) for b in bbox])
         self.traj["t"].append(round(self.t, 4))
-        # stick commands that produced this frame; frame 0 = at rest
-        act = [-1.0, 0.0, 0.0, 0.0] if action is None else \
+        # hover-centred contract: 0 == hover, so a resting frame records zeros
+        act = [0.0] * 4 if action is None else \
             [float(a) for a in np.clip(np.asarray(action, dtype=float), -1, 1)]
         self.traj["act"].append(act)
 
-    # -- stepping ------------------------------------------------------------
     def step(self):
         if self.done:
             return
-        prev_dist = self._dist()
-        action = self.policy(self.obs())
-        self.state = PHYS.step(self.state, action, self.params, DT)
+        action = self.policy(self._stack)
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self._stack = np.roll(self._stack, -OBS_DIM)
+        self._stack[-OBS_DIM:] = obs
         self.t += DT
-
-        self.target = self.target0 + self.target_vel * self.t
-        dist = self._dist()
-        self.closest = min(self.closest, dist)
-
-        b = self.bbox()
-        if b[3] > 0.5 and self._prev_bbox[3] > 0.5:
-            self._drift = (b[:2] - self._prev_bbox[:2]) / DT
-        else:                              # README: drift is 0 while not visible
-            self._drift = np.zeros(2)
-        self._prev_bbox = b
-
-        hit = dist <= self.target_radius + self.drone_radius + HIT_MARGIN
-        crash = self.state["pos"][2] <= 0.05
-        timeout = self.t >= MAX_T
-        escaped = (np.any(self.target_vel != 0.0) and dist > 40.0
-                   and dist > prev_dist)
-
-        if _real_reward is not None:
-            r = _real_reward(prev_dist, dist, b, hit, crash)
-        else:  # placeholder shaping until rewards.py lands
-            centering = b[3] * max(0.0, 1.0 - abs(b[0]) - abs(b[1]))
-            r = (2.5 * (prev_dist - dist) + 0.3 * centering - 0.05 * (1 - b[3])
-                 - 0.01 + (100.0 if hit else 0.0) - (50.0 if crash else 0.0))
-        self.total_reward += float(r)
-
-        self._record_frame(action)
-        if hit or crash or timeout or escaped:
+        self.total_reward += float(reward)
+        self.closest = min(self.closest, info["distance"])
+        self._record_frame(obs[0:4], action)
+        if terminated or truncated:
             self.done = True
-            self.outcome = ("hit" if hit else "crash" if crash
-                            else "escaped" if escaped else "timeout")
+            event = info.get("event") or "timeout"
+            self.outcome = "hit" if event == "capture" else event
 
     def run(self):
         while not self.done:
             self.step()
         return self
 
-    # -- recording -----------------------------------------------------------
+    # -- recording ---------------------------------------------------------------
     def to_dict(self):
         return {
             "drone": self.cfg,
@@ -183,7 +189,7 @@ class EpisodeRunner:
         return path
 
 
-# --- run library ------------------------------------------------------------
+# --- run library --------------------------------------------------------------
 def load_runs(runs_dir=RUNS_DIR):
     runs = []
     if not os.path.isdir(runs_dir):
@@ -209,10 +215,10 @@ def rank_runs(runs, mode="Fastest hit"):
     return hits + misses
 
 
-# --- policies ----------------------------------------------------------------
+# --- policies -------------------------------------------------------------------
 def load_policy(model_path):
-    """SB3 checkpoint path -> policy fn. Raises RuntimeError with a clear
-    message if the model can't be loaded (GUI shows it in the status line)."""
+    """SB3 checkpoint path -> policy fn over stacked obs. Raises RuntimeError
+    with a clear message if the model can't be loaded (GUI shows it)."""
     if not model_path or not os.path.isfile(model_path):
         raise RuntimeError(f"model not found: {model_path}")
     try:
@@ -224,6 +230,12 @@ def load_policy(model_path):
         model = PPO.load(model_path, device="cpu")
     except Exception as e:
         raise RuntimeError(f"could not load {os.path.basename(model_path)}: {e}")
+
+    expected = OBS_DIM * N_STACK
+    got = int(np.prod(model.observation_space.shape))
+    if got != expected:
+        raise RuntimeError(f"{os.path.basename(model_path)} expects {got}-dim obs, "
+                           f"runner builds {expected} (12 x {N_STACK} stack)")
 
     def policy(obs):
         action, _ = model.predict(obs, deterministic=True)

@@ -34,7 +34,8 @@ FPV_W, FPV_H = 400, 560
 FPV_SQ = 380
 ATT_W, ATT_H = 270, 560
 ATT_SQ = 250
-MAX_RATE_DEG = np.degrees(getattr(runner.PHYS, "MAX_RATE", 10.0))  # full stick
+from dronegym.config import DroneConfig
+MAX_RATE_DEG = np.degrees(DroneConfig.__dataclass_fields__["max_body_rate"].default)
 
 G = {"mode": "idle", "ep": None, "run": None, "fidx": 0.0, "playing": False,
      "acc": 0.0, "view": None, "grid": (-2, 10, -4, 4), "run_map": {},
