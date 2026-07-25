@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
 from dronegym import runner
-from dronegym.camera import _quat_to_rot
+from dronegym.camera import _quat_to_rot, get_bbox
 
 BATTERY = {"1S (3.7V)": 3.7, "2S (7.4V)": 7.4, "3S (11.1V)": 11.1,
            "4S (14.8V)": 14.8, "6S (22.2V)": 22.2}
@@ -43,7 +43,7 @@ MAX_RATE_DEG = np.degrees(DroneConfig.__dataclass_fields__["max_body_rate"].defa
 
 G = {"mode": "idle", "ep": None, "run": None, "fidx": 0.0, "playing": False,
      "acc": 0.0, "view": None, "grid": (-2, 10, -4, 4), "run_map": {},
-     "presets": {}, "models": {}}
+     "presets": {}, "models": {}, "dragging": None}
 
 
 # --- isometric projection ----------------------------------------------------
@@ -326,7 +326,72 @@ def run_target(run):
 
 
 def on_scen_change(sender=None, app_data=None):
-    dpg.configure_item("w_tspeed", enabled=dpg.get_value("w_scen") == "Intercept")
+    intercept = dpg.get_value("w_scen") == "Intercept"
+    dpg.configure_item("w_tspeed", enabled=intercept)
+    dpg.configure_item("w_thead", enabled=intercept)
+
+
+def on_custom_change(sender=None, app_data=None):
+    on = dpg.get_value("w_custom")
+    dpg.configure_item("grp_custom", show=on)
+    if on:                                 # enter the scenario editor
+        G.update(mode="idle", ep=None, run=None, playing=False, dragging=None)
+        dpg.set_item_label("w_play", "Play")
+
+
+def read_setup():
+    """Scenario-editor widget values -> EpisodeRunner's `custom` dict."""
+    return {"drone_pos": list(dpg.get_value("w_dpos"))[:3],
+            "drone_rpy_deg": list(dpg.get_value("w_datt"))[:3],
+            "target_pos": list(dpg.get_value("w_tpos"))[:3],
+            "target_heading_deg": float(dpg.get_value("w_thead")),
+            "target_speed": float(dpg.get_value("w_tspeed"))}
+
+
+# --- drag-and-drop placement in the iso view ------------------------------------
+def _setup_active():
+    return (dpg.get_value("w_custom") and G["mode"] == "idle"
+            and G["view"] is not None)
+
+
+def _iso_mouse():
+    mx, my = dpg.get_mouse_pos(local=False)
+    rx, ry = dpg.get_item_rect_min("iso_dl")
+    return mx - rx, my - ry
+
+
+def on_mouse_down(sender=None, app_data=None):
+    if not _setup_active():
+        return
+    sx, sy = _iso_mouse()
+    if not (0 <= sx <= ISO_W and 0 <= sy <= ISO_H):
+        return
+    V, s = G["view"], read_setup()
+    for name, p in (("target", s["target_pos"]), ("drone", s["drone_pos"])):
+        px, py = V.px(p)
+        if (px - sx) ** 2 + (py - sy) ** 2 <= 18 ** 2:
+            G["dragging"] = name
+            return
+
+
+def on_mouse_move(sender=None, app_data=None):
+    tag = {"drone": "w_dpos", "target": "w_tpos"}.get(G["dragging"])
+    if not tag or not _setup_active():
+        return
+    sx, sy = _iso_mouse()
+    V = G["view"]
+    vals = list(dpg.get_value(tag))
+    # invert the iso projection on the horizontal plane at the object's own z:
+    # u = (x - y) C ; v = (x + y) S - z
+    a = (sx - V.ox) / V.k / IsoView.C
+    b = ((sy - V.oy) / V.k + vals[2]) / IsoView.S
+    vals[0] = float(np.clip((a + b) / 2.0, -30.0, 30.0))
+    vals[1] = float(np.clip((b - a) / 2.0, -30.0, 30.0))
+    dpg.set_value(tag, vals)
+
+
+def on_mouse_release(sender=None, app_data=None):
+    G["dragging"] = None
 
 
 # --- models + live runs --------------------------------------------------------
@@ -358,10 +423,12 @@ def start_live():
     ep = runner.EpisodeRunner(
         cfg, policy, model_name=os.path.basename(sel),
         scenario="intercept" if intercept else "static",
-        target_speed=float(dpg.get_value("w_tspeed")) if intercept else None)
+        target_speed=float(dpg.get_value("w_tspeed")) if intercept else None,
+        custom=read_setup() if dpg.get_value("w_custom") else None)
     G.update(mode="live", ep=ep, run=None, playing=True, acc=0.0)
     fit_view(ep.target0,
-             extra=[ep.target0 + ep.target_vel * min(runner.MAX_T, 8.0)])
+             extra=[np.array(ep.state["pos"]),
+                    ep.target0 + ep.target_vel * min(runner.MAX_T, 8.0)])
     dpg.set_item_label("w_play", "Pause")
     dpg.configure_item("w_scrub", enabled=False)
     spd = float(np.linalg.norm(ep.target_vel))
@@ -613,6 +680,26 @@ def render():
                   f"{verdict}   reward {run.get('total_reward', 0):.0f}"],
                  act=acts[i] if acts and i < len(acts) else None)
         draw_att(tr["quat"][i])
+    elif dpg.get_value("w_custom"):        # scenario editor preview
+        s = read_setup()
+        q = runner.custom_quat(s["drone_rpy_deg"])
+        tp = np.asarray(s["target_pos"], dtype=float)
+        tvel = tpath = None
+        if dpg.get_value("w_scen") == "Intercept":
+            h = np.radians(s["target_heading_deg"])
+            tvel = np.array([np.cos(h), np.sin(h), 0.0]) * s["target_speed"]
+            tpath = (tp, tp + tvel * runner.MAX_T)
+        if not G["dragging"]:              # freeze the camera while dragging
+            fit_view(tp, extra=[s["drone_pos"]] + ([tpath[1]] if tpath else []))
+        draw_iso(pos=s["drone_pos"], quat=q, target=tp,
+                 t_radius=runner.TARGET_RADIUS, tpath=tpath, tvel=tvel)
+        bbox = get_bbox(s["drone_pos"], q, tp, runner.TARGET_RADIUS,
+                        current_cfg()["cam_angle_deg"])
+        d = float(np.linalg.norm(tp - np.asarray(s["drone_pos"])))
+        draw_fpv(bbox, [f"SETUP   dist={d:4.1f}m   drag drone/target in 3D view",
+                        "z + attitude via the SCENARIO fields",
+                        "START LIVE RUN flies this exact setup"])
+        draw_att(q)
     else:
         draw_iso()
         draw_fpv(None, ["Configure a drone, pick a trained model, START LIVE RUN.",
@@ -656,6 +743,25 @@ def build():
                 dpg.add_slider_float(tag="w_tspeed", label="target m/s", width=210,
                                      min_value=2.0, max_value=10.0,
                                      default_value=5.0, format="%.1f", enabled=False)
+                dpg.add_checkbox(label="custom setup (drag to place)",
+                                 tag="w_custom", callback=on_custom_change)
+                with dpg.group(tag="grp_custom", show=False):
+                    dpg.add_drag_floatx(tag="w_dpos", label="drone x y z", size=3,
+                                        width=210, speed=0.1, clamped=True,
+                                        min_value=-30.0, max_value=30.0,
+                                        default_value=[0.0, 0.0, 10.0, 0.0])
+                    dpg.add_drag_floatx(tag="w_datt", label="roll pitch yaw",
+                                        size=3, width=210, speed=1.0, clamped=True,
+                                        min_value=-180.0, max_value=180.0,
+                                        default_value=[0.0, 0.0, 0.0, 0.0])
+                    dpg.add_drag_floatx(tag="w_tpos", label="target x y z", size=3,
+                                        width=210, speed=0.1, clamped=True,
+                                        min_value=-30.0, max_value=30.0,
+                                        default_value=[5.0, 0.0, 10.0, 0.0])
+                    dpg.add_drag_float(tag="w_thead", label="tgt heading deg",
+                                       width=210, speed=1.0, clamped=True,
+                                       min_value=-180.0, max_value=180.0,
+                                       default_value=180.0, enabled=False)
                 dpg.add_separator()
                 dpg.add_text("MODEL", color=(255, 200, 90))
                 dpg.add_combo([], tag="w_model", label="checkpoint", width=210)
@@ -695,6 +801,11 @@ def build():
                     dpg.add_combo(list(SPEEDS), tag="w_speed", width=72,
                                   default_value="1x")
 
+    with dpg.handler_registry():
+        dpg.add_mouse_down_handler(callback=on_mouse_down)
+        dpg.add_mouse_move_handler(callback=on_mouse_move)
+        dpg.add_mouse_release_handler(callback=on_mouse_release)
+
 
 def _inject_smoke_replay():
     """--smoke only: synthetic trajectory to exercise the renderer. Not a
@@ -727,6 +838,7 @@ def main():
     fit_view([8.0, 0.0, 2.0])
     apply_preset(dpg.get_value("w_preset"))
     on_mode_change()
+    on_scen_change()
     scan_models()
     refresh_runs()
     update_est()
@@ -740,6 +852,14 @@ def main():
         if disk:
             load_replay(disk[0])
             for _ in range(30):
+                update()
+                dpg.render_dearpygui_frame()
+        # scenario-editor preview, static then intercept
+        dpg.set_value("w_custom", True)
+        on_custom_change()
+        for scen in ("Static", "Intercept"):
+            dpg.set_value("w_scen", scen)
+            for _ in range(15):
                 update()
                 dpg.render_dearpygui_frame()
         print("SMOKE OK")

@@ -18,12 +18,24 @@ import numpy as np
 
 from dronegym import physics
 from dronegym.env import TARGET_MIN_Z, DroneTargetEnv
+from dronegym.state import make_state, quat_from_euler
 from dronegym.task import (ACTION_REPEAT, MAX_EPISODE_STEPS, N_STACK, OBS_DIM,
                            PHYSICS_DT, TARGET_RADIUS)
 
 RUNS_DIR = "runs"
 DT = ACTION_REPEAT * PHYSICS_DT            # policy-rate timestep: 0.02 s
 MAX_T = MAX_EPISODE_STEPS * DT             # 10 s episode cap
+
+
+def custom_quat(rpy_deg):
+    """Aviation display convention (roll right+, pitch up+, yaw left+) -> quat.
+
+    state.quat_from_euler's pitch is rotation about body +y, which is nose-DOWN
+    positive in our frame; the GUI's attitude panel shows nose-up positive, so
+    the sign flips here to keep 'what you typed' == 'what the panel reads'.
+    """
+    r, p, y = np.radians(np.asarray(rpy_deg, dtype=float))
+    return quat_from_euler(r, -p, y)
 
 
 class InterceptTargetEnv(DroneTargetEnv):
@@ -84,7 +96,7 @@ class EpisodeRunner:
     """One episode, steppable frame-by-frame (for the GUI) or all at once."""
 
     def __init__(self, cfg, policy, scenario="static", target_speed=None,
-                 difficulty=0, model_name="?", seed=None):
+                 difficulty=0, model_name="?", seed=None, custom=None):
         self.cfg = dict(cfg)               # raw dict, kept for run JSON / labels
         self.policy = policy
         self.model_name = model_name
@@ -97,6 +109,11 @@ class EpisodeRunner:
             self.env = DroneTargetEnv(dcfg, difficulty)
 
         obs, info = self.env.reset(seed=seed)
+        if custom:                          # GUI scenario editor overrides spawn
+            self._apply_custom(custom)
+            obs, bbox = self.env._build_obs()
+            self.env._ever_seen = bool(bbox[3] > 0.5)
+            info = dict(info, distance=self.env._distance())
         # VecFrameStack semantics: zeros at reset except the newest slot (last).
         self._stack = np.zeros(OBS_DIM * N_STACK, dtype=np.float32)
         self._stack[-OBS_DIM:] = obs
@@ -113,6 +130,25 @@ class EpisodeRunner:
         self.closest = info["distance"]
         self.traj = {"pos": [], "quat": [], "bbox": [], "t": [], "act": []}
         self._record_frame(obs[0:4], None)
+
+    def _apply_custom(self, custom):
+        """Overwrite the sampled spawn with the GUI scenario editor's values.
+
+        custom = {drone_pos, drone_rpy_deg (aviation display signs),
+                  target_pos, target_heading_deg, target_speed}
+        """
+        env = self.env
+        pos = np.asarray(custom["drone_pos"], dtype=float)
+        pos[2] = max(pos[2], 0.3)                       # never spawn underground
+        env.state = make_state(pos, quat=custom_quat(custom["drone_rpy_deg"]),
+                               motor=env.hover_thrust)
+        tp = np.asarray(custom["target_pos"], dtype=float)
+        tp[2] = max(tp[2], TARGET_MIN_Z)
+        env.target_pos = tp
+        if isinstance(env, InterceptTargetEnv):
+            h = np.radians(float(custom.get("target_heading_deg", 0.0)))
+            spd = float(custom.get("target_speed") or 5.0)
+            env.target_vel = np.array([np.cos(h), np.sin(h), 0.0]) * spd
 
     # -- gui-facing views ------------------------------------------------------
     @property
