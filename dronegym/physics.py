@@ -1,6 +1,7 @@
 """Minimal rigid-body-style quadrotor physics used by the RL environment."""
 
 import numpy as np
+from .config import DroneConfig
 
 POS = slice(0, 3)
 VEL = slice(3, 6)
@@ -72,6 +73,23 @@ def velocity_body(state):
     q = quat(state)
     q_inverse = q * np.array([1.0, -1.0, -1.0, -1.0])
     return quat_rotate(q_inverse, vel(state))
+
+
+def derive_params(cfg):
+    """Accept a YAML/GUI config dict (or DroneConfig) and return a DroneConfig.
+
+    runner.py calls this to bridge the dict-based GUI config to the physics API.
+    """
+    if isinstance(cfg, DroneConfig):
+        return cfg
+    fields = DroneConfig.__dataclass_fields__
+    return DroneConfig(**{k: v for k, v in cfg.items() if k in fields})
+
+
+def make_state(params, rng=None, pos_spread=1.0, vel_spread=0.5, tilt_spread=0.2):
+    """Alias for initial_state; satisfies runner.py's interface check."""
+    return initial_state(params, rng=rng, pos_spread=pos_spread,
+                         vel_spread=vel_spread, tilt_spread=tilt_spread)
 
 
 def initial_state(cfg, rng=None, pos_spread=1.0, vel_spread=0.5, tilt_spread=0.2):
