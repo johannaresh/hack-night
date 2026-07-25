@@ -1,0 +1,21 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# RL artifacts
+checkpoints/
+runs/
+logs/
+*.zip
+
+# Viz
+.rerun/
+*.rrd
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
