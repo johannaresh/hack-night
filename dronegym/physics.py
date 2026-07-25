@@ -86,10 +86,16 @@ def derive_params(cfg):
     return DroneConfig(**{k: v for k, v in cfg.items() if k in fields})
 
 
-def make_state(params, rng=None, pos_spread=1.0, vel_spread=0.5, tilt_spread=0.2):
-    """Alias for initial_state; satisfies runner.py's interface check."""
-    return initial_state(params, rng=rng, pos_spread=pos_spread,
-                         vel_spread=vel_spread, tilt_spread=tilt_spread)
+def make_state(pos, yaw=0.0):
+    """Build a start state at world position pos with heading yaw (rad).
+
+    Motor starts at zero thrust and spools up under commands — matches
+    runner.py's calling convention: make_state([x,y,z], yaw=heading).
+    """
+    state = np.zeros(14, dtype=float)
+    state[POS] = np.asarray(pos, dtype=float)
+    state[QUAT] = [np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)]
+    return state
 
 
 def initial_state(cfg, rng=None, pos_spread=1.0, vel_spread=0.5, tilt_spread=0.2):
