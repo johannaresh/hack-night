@@ -37,29 +37,49 @@ HIT_MARGIN = 0.15
 class EpisodeRunner:
     """One episode, steppable frame-by-frame (for the GUI) or all at once."""
 
-    def __init__(self, cfg, policy, target_pos=None, target_radius=0.5,
-                 model_name="scripted", rng=None):
+    def __init__(self, cfg, policy, scenario="static", target_speed=None,
+                 target_pos=None, target_radius=0.5, model_name="?", rng=None):
         rng = rng or np.random.default_rng()
         self.cfg = dict(cfg)
         self.policy = policy
         self.model_name = model_name
+        self.scenario = scenario
         self.params = PHYS.derive_params(cfg)
 
-        if target_pos is None:
-            bearing = rng.uniform(-0.5, 0.5)          # rad, roughly ahead
-            dist = rng.uniform(7.0, 10.0)
-            target_pos = [dist * np.cos(bearing), dist * np.sin(bearing),
-                          rng.uniform(1.5, 3.5)]
-        self.target = np.asarray(target_pos, dtype=float)
+        if scenario == "intercept":
+            # README v2 spec: target spawns 12-20 m out, flies a level
+            # constant-velocity line passing within ~6 m of the drone spawn
+            bearing = rng.uniform(-1.0, 1.0)
+            dist = rng.uniform(12.0, 20.0)
+            target_pos = np.array([dist * np.cos(bearing), dist * np.sin(bearing),
+                                   rng.uniform(1.5, 3.5)])
+            r, th = rng.uniform(0.0, 6.0), rng.uniform(0.0, 2 * np.pi)
+            aim = np.array([r * np.cos(th), r * np.sin(th), target_pos[2]])
+            d = aim - target_pos
+            d[2] = 0.0
+            d /= max(np.linalg.norm(d), 1e-6)
+            speed = float(target_speed) if target_speed else rng.uniform(2.0, 10.0)
+            self.target_vel = d * speed
+        else:
+            self.target_vel = np.zeros(3)
+            if target_pos is None:
+                bearing = rng.uniform(-0.5, 0.5)      # rad, roughly ahead
+                dist = rng.uniform(7.0, 10.0)
+                target_pos = [dist * np.cos(bearing), dist * np.sin(bearing),
+                              rng.uniform(1.5, 3.5)]
+        self.target0 = np.asarray(target_pos, dtype=float)
+        self.target = self.target0.copy()
         self.target_radius = target_radius
         self.drone_radius = cfg["frame_size_mm"] / 2000.0   # frame half-span, m
 
         self.state = PHYS.make_state([0.0, 0.0, 1.5], yaw=0.0)
         self.t = 0.0
         self.done = False
-        self.outcome = None                            # 'hit' | 'crash' | 'timeout'
+        self.outcome = None                # 'hit' | 'crash' | 'timeout' | 'escaped'
         self.total_reward = 0.0
         self.closest = self._dist()
+        self._prev_bbox = self.bbox()      # for obs 12-13: bbox drift rate
+        self._drift = np.zeros(2)
         self.traj = {"pos": [], "quat": [], "bbox": [], "t": [], "act": []}
         self._record_frame()
 
@@ -77,7 +97,8 @@ class EpisodeRunner:
         g_body = R.T @ np.array([0.0, 0.0, -1.0])
         v_body = R.T @ s["vel"]
         return np.concatenate([self.bbox(), s["rates"], g_body,
-                               [v_body[0], v_body[2]]]).astype(np.float32)
+                               [v_body[0], v_body[2]],
+                               self._drift]).astype(np.float32)
 
     def _record_frame(self, action=None):
         self.traj["pos"].append(self.state["pos"].tolist())
@@ -98,25 +119,36 @@ class EpisodeRunner:
         self.state = PHYS.step(self.state, action, self.params, DT)
         self.t += DT
 
+        self.target = self.target0 + self.target_vel * self.t
         dist = self._dist()
         self.closest = min(self.closest, dist)
+
+        b = self.bbox()
+        if b[3] > 0.5 and self._prev_bbox[3] > 0.5:
+            self._drift = (b[:2] - self._prev_bbox[:2]) / DT
+        else:                              # README: drift is 0 while not visible
+            self._drift = np.zeros(2)
+        self._prev_bbox = b
+
         hit = dist <= self.target_radius + self.drone_radius + HIT_MARGIN
         crash = self.state["pos"][2] <= 0.05
         timeout = self.t >= MAX_T
+        escaped = (np.any(self.target_vel != 0.0) and dist > 40.0
+                   and dist > prev_dist)
 
         if _real_reward is not None:
-            r = _real_reward(prev_dist, dist, self.bbox(), hit, crash)
+            r = _real_reward(prev_dist, dist, b, hit, crash)
         else:  # placeholder shaping until rewards.py lands
-            b = self.bbox()
             centering = b[3] * max(0.0, 1.0 - abs(b[0]) - abs(b[1]))
             r = (2.5 * (prev_dist - dist) + 0.3 * centering - 0.05 * (1 - b[3])
                  - 0.01 + (100.0 if hit else 0.0) - (50.0 if crash else 0.0))
         self.total_reward += float(r)
 
         self._record_frame(action)
-        if hit or crash or timeout:
+        if hit or crash or timeout or escaped:
             self.done = True
-            self.outcome = "hit" if hit else ("crash" if crash else "timeout")
+            self.outcome = ("hit" if hit else "crash" if crash
+                            else "escaped" if escaped else "timeout")
 
     def run(self):
         while not self.done:
@@ -129,12 +161,16 @@ class EpisodeRunner:
             "drone": self.cfg,
             "model": self.model_name,
             "dt": DT,
+            "scenario": self.scenario,
+            "target_speed": round(float(np.linalg.norm(self.target_vel)), 2),
             "outcome": self.outcome,
             "hit": self.outcome == "hit",
             "time_to_hit": round(self.t, 3) if self.outcome == "hit" else None,
             "closest_approach": round(self.closest, 3),
             "total_reward": round(self.total_reward, 2),
-            "target": {"pos": self.target.tolist(), "radius": self.target_radius},
+            "target": {"pos0": self.target0.tolist(),
+                       "vel": self.target_vel.tolist(),
+                       "radius": self.target_radius},
             "traj": self.traj,
         }
 

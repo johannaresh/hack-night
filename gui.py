@@ -61,7 +61,7 @@ class IsoView:
         return (self.ox + self.k * u, self.oy + self.k * v)
 
 
-def fit_view(target, traj=None):
+def fit_view(target, traj=None, extra=None):
     t = np.asarray(target, dtype=float)
     pts = [(-2, -3, 0), (-2, 3, 0), (max(4, t[0] + 2), -3, 0),
            (0, 0, 4), (t[0], t[1] - 2, 0), (t[0], t[1] + 2, 0),
@@ -69,6 +69,8 @@ def fit_view(target, traj=None):
     if traj is not None and len(traj) > 1:
         a = np.asarray(traj, dtype=float)
         pts += [a.min(axis=0), a.max(axis=0)]
+    if extra:
+        pts += [np.asarray(p, dtype=float) for p in extra]
     P = np.array(pts, dtype=float)
     x0, y0 = P[:, 0].min(), P[:, 1].min()
     x1, y1 = P[:, 0].max(), P[:, 1].max()
@@ -78,7 +80,8 @@ def fit_view(target, traj=None):
 
 
 # --- drawing ------------------------------------------------------------------
-def draw_iso(pos=None, quat=None, target=None, t_radius=0.5, trail=(), flash=False):
+def draw_iso(pos=None, quat=None, target=None, t_radius=0.5, trail=(), flash=False,
+             tpath=None, tvel=None):
     L = "iso_layer"
     dpg.delete_item(L, children_only=True)
     V = G["view"]
@@ -90,6 +93,10 @@ def draw_iso(pos=None, quat=None, target=None, t_radius=0.5, trail=(), flash=Fal
     for gy in np.arange(np.floor(y0), np.ceil(y1) + 0.1, 2.0):
         dpg.draw_line(V.px((x0, gy, 0)), V.px((x1, gy, 0)), color=(46, 50, 62), parent=L)
 
+    if tpath is not None:                  # intercept: the target's flight line
+        dpg.draw_line(V.px(tpath[0]), V.px(tpath[1]),
+                      color=(255, 140, 50, 70), thickness=1, parent=L)
+
     if target is not None:
         sh, tp = V.px((target[0], target[1], 0)), V.px(target)
         dpg.draw_circle(sh, max(3, V.k * t_radius * 0.6), fill=(0, 0, 0, 90),
@@ -97,6 +104,10 @@ def draw_iso(pos=None, quat=None, target=None, t_radius=0.5, trail=(), flash=Fal
         dpg.draw_line(sh, tp, color=(120, 120, 135, 110), parent=L)
         dpg.draw_circle(tp, max(4, V.k * t_radius), color=(255, 190, 80),
                         fill=(255, 140, 50, 210), thickness=2, parent=L)
+        if tvel is not None and np.linalg.norm(tvel) > 1e-6:
+            head = np.asarray(target) + np.asarray(tvel) / np.linalg.norm(tvel) * 1.4
+            dpg.draw_arrow(V.px(head), tp, color=(255, 140, 50, 200),
+                           thickness=2, size=7, parent=L)
         if flash:
             dpg.draw_circle(tp, max(7, V.k * t_radius * 2.2),
                             color=(255, 240, 120, 220), thickness=3, parent=L)
@@ -242,6 +253,18 @@ def current_cfg():
             "frame_size_mm": float(dpg.get_value("w_frame"))}
 
 
+def run_target(run):
+    """Target info from a run dict; tolerates the pre-intercept format."""
+    t = run["target"]
+    pos0 = np.array(t.get("pos0", t.get("pos")), dtype=float)
+    vel = np.array(t.get("vel", [0, 0, 0]), dtype=float)
+    return pos0, vel, t.get("radius", 0.5)
+
+
+def on_scen_change(sender=None, app_data=None):
+    dpg.configure_item("w_tspeed", enabled=dpg.get_value("w_scen") == "Intercept")
+
+
 # --- models + live runs --------------------------------------------------------
 def status(msg, ok=True):
     dpg.set_value("w_status", msg)
@@ -267,12 +290,19 @@ def start_live():
         status(str(e), ok=False)
         return
     cfg = current_cfg()
-    ep = runner.EpisodeRunner(cfg, policy, model_name=os.path.basename(sel))
+    intercept = dpg.get_value("w_scen") == "Intercept"
+    ep = runner.EpisodeRunner(
+        cfg, policy, model_name=os.path.basename(sel),
+        scenario="intercept" if intercept else "static",
+        target_speed=float(dpg.get_value("w_tspeed")) if intercept else None)
     G.update(mode="live", ep=ep, run=None, playing=True, acc=0.0)
-    fit_view(ep.target)
+    fit_view(ep.target0,
+             extra=[ep.target0 + ep.target_vel * min(runner.MAX_T, 8.0)])
     dpg.set_item_label("w_play", "Pause")
     dpg.configure_item("w_scrub", enabled=False)
-    status(f"flying {cfg['name']} on {sel} ...")
+    spd = float(np.linalg.norm(ep.target_vel))
+    status(f"flying {cfg['name']} on {sel}"
+           + (f"  |  intercept @{spd:.1f} m/s ..." if intercept else " ..."))
 
 
 def finish_live():
@@ -295,10 +325,12 @@ def refresh_runs():
     G["run_map"] = {}
     items = []
     for i, r in enumerate(ranked, 1):
+        spd = r.get("target_speed") or 0
+        tag = f" @{spd:.0f}m/s" if spd else ""
         if r.get("hit"):
-            lab = f"{i:>2}. HIT {r['time_to_hit']:5.2f}s"
+            lab = f"{i:>2}. HIT {r['time_to_hit']:5.2f}s{tag}"
         else:
-            lab = f"{i:>2}. {r.get('outcome', 'miss').upper()} {r.get('closest_approach', 0):.1f}m"
+            lab = f"{i:>2}. {r.get('outcome', 'miss').upper()} {r.get('closest_approach', 0):.1f}m{tag}"
         lab += f"  R{r.get('total_reward', 0):>5.0f}  {r['drone'].get('name', '?')} [{r.get('model', '?')}]"
         while lab in G["run_map"]:
             lab += " "
@@ -310,7 +342,9 @@ def refresh_runs():
 def load_replay(run, autoplay=True):
     n = len(run["traj"]["pos"])
     G.update(mode="replay", run=run, ep=None, fidx=0.0, playing=autoplay, acc=0.0)
-    fit_view(run["target"]["pos"], traj=run["traj"]["pos"])
+    t0, tvel, _ = run_target(run)
+    fit_view(t0, traj=run["traj"]["pos"],
+             extra=[t0 + tvel * run["traj"]["t"][-1]])
     dpg.configure_item("w_scrub", max_value=n - 1, enabled=True)
     dpg.set_value("w_scrub", 0)
     dpg.set_item_label("w_play", "Pause" if autoplay else "Play")
@@ -371,24 +405,37 @@ def render():
     if G["mode"] == "live" and G["ep"] is not None:
         ep = G["ep"]
         d = float(np.linalg.norm(ep.target - ep.state["pos"]))
+        tspd = float(np.linalg.norm(ep.target_vel))
         draw_iso(ep.state["pos"], ep.state["quat"], ep.target, ep.target_radius,
-                 trail=ep.traj["pos"])
+                 trail=ep.traj["pos"],
+                 tpath=(ep.target0, ep.target0 + ep.target_vel * runner.MAX_T)
+                 if tspd > 1e-6 else None,
+                 tvel=ep.target_vel if tspd > 1e-6 else None)
+        hud2 = f"{ep.cfg['name']}  |  {ep.model_name}"
+        if tspd > 1e-6:
+            hud2 += f"  |  tgt {tspd:.1f}m/s"
         draw_fpv(ep.traj["bbox"][-1],
-                 [f"LIVE   t={ep.t:5.2f}s   dist={d:4.1f}m",
-                  f"{ep.cfg['name']}  |  {ep.model_name}",
+                 [f"LIVE   t={ep.t:5.2f}s   dist={d:4.1f}m", hud2,
                   f"reward {ep.total_reward:8.1f}"],
                  act=ep.traj["act"][-1])
     elif G["mode"] == "replay" and G["run"]:
         run, tr = G["run"], G["run"]["traj"]
         i = min(int(G["fidx"]), len(tr["pos"]) - 1)
-        pos, tgt = np.array(tr["pos"][i]), np.array(run["target"]["pos"])
+        pos = np.array(tr["pos"][i])
+        t0, tvel, trad = run_target(run)
+        tgt = t0 + tvel * tr["t"][i]
+        tspd = float(np.linalg.norm(tvel))
         at_end = i >= len(tr["pos"]) - 1
         if run.get("hit"):
             verdict = f"HIT in {run['time_to_hit']:.2f}s"
         else:
             verdict = f"{run.get('outcome', 'miss').upper()}  closest {run.get('closest_approach', 0):.2f}m"
-        draw_iso(pos, tr["quat"][i], tgt, run["target"]["radius"],
-                 trail=tr["pos"][:i + 1], flash=at_end and run.get("hit", False))
+        if tspd > 1e-6:
+            verdict += f"  |  tgt {tspd:.1f}m/s"
+        draw_iso(pos, tr["quat"][i], tgt, trad,
+                 trail=tr["pos"][:i + 1], flash=at_end and run.get("hit", False),
+                 tpath=(t0, t0 + tvel * tr["t"][-1]) if tspd > 1e-6 else None,
+                 tvel=tvel if tspd > 1e-6 else None)
         acts = tr.get("act")
         draw_fpv(tr["bbox"][i],
                  [f"REPLAY   t={tr['t'][i]:5.2f}s   dist={float(np.linalg.norm(tgt - pos)):4.1f}m",
@@ -430,6 +477,14 @@ def build():
                 dpg.add_slider_int(tag="w_frame", label="frame mm", width=210,
                                    min_value=60, max_value=500, default_value=220)
                 dpg.add_separator()
+                dpg.add_text("SCENARIO", color=(255, 200, 90))
+                dpg.add_radio_button(("Static", "Intercept"), tag="w_scen",
+                                     horizontal=True, default_value="Static",
+                                     callback=on_scen_change)
+                dpg.add_slider_float(tag="w_tspeed", label="target m/s", width=210,
+                                     min_value=2.0, max_value=10.0,
+                                     default_value=5.0, format="%.1f", enabled=False)
+                dpg.add_separator()
                 dpg.add_text("MODEL", color=(255, 200, 90))
                 dpg.add_combo([], tag="w_model", label="checkpoint", width=210)
                 with dpg.group(horizontal=True):
@@ -463,9 +518,10 @@ def _inject_smoke_replay():
     flight policy — pure test scaffolding, never saved to runs/."""
     n = 150
     run = {"drone": {"name": "smoke-test"}, "model": "none", "dt": 0.02,
+           "scenario": "intercept", "target_speed": 1.5,
            "outcome": "hit", "hit": True, "time_to_hit": 3.0,
            "closest_approach": 0.5, "total_reward": 100.0,
-           "target": {"pos": [8, 2, 2], "radius": 0.5},
+           "target": {"pos0": [8, 2, 2], "vel": [-1.3, 0.7, 0], "radius": 0.5},
            "traj": {"pos": [[8 * i / n, 2 * np.sin(3 * i / n), 1.5 + np.sin(2 * i / n)] for i in range(n)],
                     "quat": [[1, 0, 0, 0]] * n,
                     "bbox": [[0.4 * np.sin(i / 20), 0.15 * np.cos(i / 17),
@@ -492,10 +548,16 @@ def main():
     refresh_runs()
 
     if smoke:
-        _inject_smoke_replay()
-        for _ in range(90):
+        _inject_smoke_replay()                # new format, moving target
+        for _ in range(60):
             update()
             dpg.render_dearpygui_frame()
+        disk = runner.load_runs(RUNS_DIR)     # old-format compat, if present
+        if disk:
+            load_replay(disk[0])
+            for _ in range(30):
+                update()
+                dpg.render_dearpygui_frame()
         print("SMOKE OK")
         dpg.destroy_context()
         return
