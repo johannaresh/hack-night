@@ -1,7 +1,8 @@
 numpy
+pyyaml
 gymnasium
 stable-baselines3
 tensorboard
-pyyaml
 pytest
+dearpygui
 rerun-sdk

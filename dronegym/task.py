@@ -11,7 +11,8 @@ ARENA_RADIUS = 50.0           # [m] from origin; max spawn is 30 m + overshoot r
 FOV_DEG = 120.0               # camera field of view, edge to edge
 
 MAX_EPISODE_STEPS = 500       # 10 s at 50 Hz -> truncation
-ACTION_REPEAT = 2             # physics steps per policy step: 100 Hz -> 50 Hz policy
+PHYSICS_DT = 1.0 / 250.0      # physics.py's native timestep
+ACTION_REPEAT = 5             # physics steps per policy step: 250 Hz -> 50 Hz policy
 
 LOST_GRACE_STEPS = 25         # consecutive invisible steps tolerated after first sighting
 LOST_GRACE_INITIAL = 100      # ...before the target has ever been seen (level 3 search)

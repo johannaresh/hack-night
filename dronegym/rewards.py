@@ -16,7 +16,7 @@ asserted in tests/test_rewards.py -- the classic failure modes are all arithmeti
 import numpy as np
 
 from dronegym.camera import get_bbox
-from dronegym.stub_physics import POS, QUAT, RATES
+from dronegym.physics import OMEGA, POS, QUAT
 from dronegym.task import FOV_DEG, TARGET_RADIUS
 
 WEIGHTS = {
@@ -85,7 +85,7 @@ def compute_reward(state, prev_state, action, prev_action, target_pos, cfg,
     # Smoothness (CAPS-style action-difference regularisation) and rate penalty.
     da = np.asarray(action, dtype=float) - np.asarray(prev_action, dtype=float)
     terms["smoothness"] = WEIGHTS["smoothness"] * float(da @ da)
-    w = state[RATES] / 10.0
+    w = state[OMEGA] / 10.0
     terms["rate"] = WEIGHTS["rate"] * float(w @ w)
 
     terms["time"] = WEIGHTS["time"]

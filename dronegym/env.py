@@ -40,14 +40,14 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from dronegym import stub_physics
+from dronegym import physics
 from dronegym.camera import _quat_to_rot, get_bbox
+from dronegym.physics import OMEGA, POS, QUAT, VEL
 from dronegym.rewards import WEIGHTS, compute_reward
-from dronegym.stub_physics import (G, POS, QUAT, RATES, VEL, make_state,
-                                   quat_from_euler)
+from dronegym.state import make_state, quat_from_euler
 from dronegym.task import (ACT_DIM, ACTION_REPEAT, ARENA_RADIUS, CAPTURE_RADIUS,
                            FOV_DEG, LOST_GRACE_INITIAL, LOST_GRACE_STEPS,
-                           MAX_EPISODE_STEPS, OBS_DIM, TARGET_RADIUS)
+                           MAX_EPISODE_STEPS, OBS_DIM, PHYSICS_DT, TARGET_RADIUS)
 
 MAX_DIFFICULTY = 3
 
@@ -78,14 +78,12 @@ RATE_SCALE = 10.0
 VEL_SCALE = 15.0
 OBS_LIMIT = 5.0
 
-GRAVITY_WORLD = np.array([0.0, 0.0, -G])
-
 
 class DroneTargetEnv(gym.Env):
     """Chase a target sphere using bbox observations.
 
     action = [thrust, roll_rate, pitch_rate, yaw_rate] in [-1, 1];
-    thrust is hover-centred, rates scale to +-cfg.max_rate.
+    thrust is hover-centred, rates scale to +-cfg.max_body_rate.
     """
 
     metadata = {"render_modes": []}
@@ -99,8 +97,9 @@ class DroneTargetEnv(gym.Env):
         self.observation_space = spaces.Box(-OBS_LIMIT, OBS_LIMIT, (OBS_DIM,),
                                             dtype=np.float32)
 
-        # Swap point for moterodiaz's physics.py: reassign this one attribute.
-        self._physics_step = stub_physics.step
+        self._physics_step = physics.step
+        self.hover_thrust = cfg.mass_kg * cfg.gravity
+        self._gravity_world = np.array([0.0, 0.0, -cfg.gravity])
 
         self.state = None
         self.target_pos = None
@@ -137,8 +136,7 @@ class DroneTargetEnv(gym.Env):
 
         # Motor state starts at hover so the drone doesn't sag during the ~50 ms
         # it would otherwise take the first-order motor lag to spin up.
-        self.state = make_state(pos, vel=vel, quat=quat,
-                                motor=self.cfg.hover_thrust)
+        self.state = make_state(pos, vel=vel, quat=quat, motor=self.hover_thrust)
         self.target_pos = self._place_target(pos, quat)
 
         self._prev_action = np.zeros(ACT_DIM)
@@ -158,12 +156,12 @@ class DroneTargetEnv(gym.Env):
             raise RuntimeError("step() before reset()")
 
         action = np.clip(np.asarray(action, dtype=float).reshape(ACT_DIM), -1.0, 1.0)
-        cmd = self._map_action(action)
+        cmd = self._physics_action(action)
 
         prev_state = self.state
         state = prev_state
-        for _ in range(ACTION_REPEAT):     # 100 Hz physics under a 50 Hz policy
-            state = self._physics_step(state, cmd, self.cfg)
+        for _ in range(ACTION_REPEAT):     # 250 Hz physics under a 50 Hz policy
+            state = self._physics_step(state, cmd, self.cfg, PHYSICS_DT)
         self.state = state
         self._steps += 1
 
@@ -200,11 +198,28 @@ class DroneTargetEnv(gym.Env):
         baseline_p.py) can check the mapping without stepping physics.
         """
         a = np.clip(np.asarray(action, dtype=float).reshape(ACT_DIM), -1.0, 1.0)
-        hover = self.cfg.hover_thrust
-        thrust_cmd = float(np.clip(hover + a[0] * (self.cfg.max_thrust - hover),
-                                   0.0, self.cfg.max_thrust))
-        rate_cmd = a[1:4] * self.cfg.max_rate
+        hover = self.hover_thrust
+        thrust_cmd = float(np.clip(hover + a[0] * (self.cfg.max_thrust_n - hover),
+                                   0.0, self.cfg.max_thrust_n))
+        rate_cmd = a[1:4] * self.cfg.max_body_rate
         return thrust_cmd, rate_cmd
+
+    def _physics_action(self, action):
+        """Our hover-centred command -> physics.step's raw [-1, 1]^4 contract.
+
+        physics.step maps a[0] with (a[0] * 0.5 + 0.5) * max_thrust_n, i.e. hover
+        sits at 2*hover/max_thrust_n - 1 (about -0.80 on a 10:1 build). Feeding a
+        fresh Gaussian policy straight into that commands ~5x hover on step one.
+        So the env keeps the hover-centred action space the policy learns on, and
+        inverts physics' mapping here. The inversion is exact: physics recovers
+        the thrust in newtons that _map_action asked for.
+        """
+        thrust_cmd, rate_cmd = self._map_action(action)
+        a0 = 2.0 * thrust_cmd / self.cfg.max_thrust_n - 1.0
+        cmd = np.empty(ACT_DIM)
+        cmd[0] = a0
+        cmd[1:4] = rate_cmd / self.cfg.max_body_rate
+        return cmd
 
     # -------------------------------------------------------------- internals
 
@@ -219,12 +234,14 @@ class DroneTargetEnv(gym.Env):
                         self.cfg.cam_angle_deg, FOV_DEG)
         R_wb = _quat_to_rot(state[QUAT]).T          # world -> body, used twice
         vel_body = R_wb @ state[VEL]
-        grav_body = R_wb @ GRAVITY_WORLD            # == stub_physics.gravity_body
+        # Same result as physics.gravity_body / velocity_body, but reusing one
+        # rotation matrix instead of two quat_rotate calls.
+        grav_body = R_wb @ self._gravity_world
 
         obs = np.empty(OBS_DIM)
         obs[0:4] = bbox
-        obs[4:7] = state[RATES] / RATE_SCALE
-        obs[7:10] = grav_body / G
+        obs[4:7] = state[OMEGA] / RATE_SCALE
+        obs[7:10] = grav_body / self.cfg.gravity
         obs[10] = vel_body[0] / VEL_SCALE
         obs[11] = vel_body[2] / VEL_SCALE
 
@@ -310,14 +327,15 @@ class DroneTargetEnv(gym.Env):
 
 
 if __name__ == "__main__":
-    from dronegym.config_shim import load_config
+    from dronegym.presets import load_config
 
     cfg = load_config("configs/freestyle_5inch.yaml")
     env = DroneTargetEnv(cfg, difficulty=0)
 
     obs, info = env.reset(seed=0)
     print(f"preset:          {cfg.name} (uptilt {cfg.cam_angle_deg:.0f} deg, "
-          f"hover {cfg.hover_thrust:.2f} N, max {cfg.max_thrust:.2f} N)")
+          f"hover {env.hover_thrust:.2f} N, max {cfg.max_thrust_n:.2f} N, "
+          f"TWR {cfg.max_thrust_n / env.hover_thrust:.1f})")
     print("level-0 obs:    ", np.round(obs, 4))
     print("  bbox x,y,size,vis =", np.round(obs[:4], 4))
     print("  distance          =", round(info["distance"], 4))
@@ -327,9 +345,13 @@ if __name__ == "__main__":
 
     # a[0] = 0 must be exact hover, or a fresh policy rockets upward.
     thrust, rates = env._map_action(np.zeros(ACT_DIM))
-    assert abs(thrust - cfg.hover_thrust) < 1e-9, thrust
+    assert abs(thrust - env.hover_thrust) < 1e-9, thrust
     assert np.allclose(rates, 0.0)
-    print(f"hover mapping:   a[0]=0 -> {thrust:.4f} N (hover {cfg.hover_thrust:.4f} N)")
+    # And the inversion into physics' raw contract must round-trip exactly.
+    raw = env._physics_action(np.zeros(ACT_DIM))
+    assert abs((raw[0] * 0.5 + 0.5) * cfg.max_thrust_n - env.hover_thrust) < 1e-9
+    print(f"hover mapping:   a[0]=0 -> {thrust:.4f} N (hover {env.hover_thrust:.4f} N)"
+          f", raw a[0]={raw[0]:+.4f} into physics")
 
     # Every level spawns the target inside the frame (level 3 sometimes not, by design).
     for level in (0, 1, 2):

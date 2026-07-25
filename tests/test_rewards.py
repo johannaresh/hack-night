@@ -12,7 +12,7 @@ Two kinds of test live here.
     the edit is wrong, not the test.
 
 Everything here runs standalone against rewards.py using hand-built (14,) states
-from stub_physics.make_state — no env.py, no physics rollout, no training.
+from state.make_state — no env.py, no physics rollout, no training.
 """
 
 import math
@@ -28,9 +28,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dronegym.camera import get_bbox                                    # noqa: E402
-from dronegym.config_shim import load_config                            # noqa: E402
+from dronegym.presets import load_config                            # noqa: E402
 from dronegym.rewards import EVENT_TERMS, WEIGHTS, compute_reward       # noqa: E402
-from dronegym.stub_physics import POS, QUAT, make_state                 # noqa: E402
+from dronegym.physics import POS, QUAT                                  # noqa: E402
+from dronegym.state import make_state                 # noqa: E402
 from dronegym.task import FOV_DEG, MAX_EPISODE_STEPS, TARGET_RADIUS     # noqa: E402
 
 CFG = load_config("freestyle_5inch")
@@ -466,7 +467,7 @@ def test_no_rate_penalty_paralysis():
     must still cost far less than the capture bonus, or the policy learns to
     freeze level and never turn.
     """
-    half_authority = 0.5 * CFG.max_rate
+    half_authority = 0.5 * CFG.max_body_rate
     per_step = abs(WEIGHTS["rate"]) * 3.0 * (half_authority / 10.0) ** 2
     assert per_step * MAX_EPISODE_STEPS < 0.5 * WEIGHTS["capture"]
 

@@ -42,7 +42,7 @@ from stable_baselines3.common.callbacks import (
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
 
-from dronegym.config_shim import load_config
+from dronegym.presets import load_config
 from dronegym.env import DroneTargetEnv
 from dronegym.task import MAX_EPISODE_STEPS, N_STACK, OBS_DIM
 

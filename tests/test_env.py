@@ -16,10 +16,10 @@ import numpy as np
 import pytest
 
 from dronegym.camera import _quat_to_rot
-from dronegym.config_shim import load_config
+from dronegym.presets import load_config
 from dronegym.env import MAX_DIFFICULTY, TARGET_MIN_Z, DroneTargetEnv
 from dronegym.rewards import WEIGHTS
-from dronegym.stub_physics import POS, QUAT, RATES, VEL
+from dronegym.physics import OMEGA, POS, QUAT, VEL
 from dronegym.task import (ACT_DIM, CAPTURE_RADIUS, FOV_DEG, LOST_GRACE_STEPS,
                            MAX_EPISODE_STEPS, OBS_DIM)
 
@@ -107,7 +107,7 @@ def test_obs_scaling_survives_extreme_state():
     env = _env("freestyle_5inch", 0)
     env.reset(seed=0)
     env.state[VEL] = np.array([30.0, 30.0, -30.0])
-    env.state[RATES] = np.array([20.0, -20.0, 20.0])
+    env.state[OMEGA] = np.array([20.0, -20.0, 20.0])
     env.target_pos = env.state[POS] + _cam_forward_world(env) * 0.05
 
     obs, bbox = env._build_obs()
@@ -126,22 +126,22 @@ def test_map_action_is_hover_centred(preset):
     cfg = _CFG[preset]
 
     thrust, rates = env._map_action(np.zeros(ACT_DIM))
-    assert thrust == pytest.approx(cfg.hover_thrust, abs=1e-9)
+    assert thrust == pytest.approx(env.hover_thrust, abs=1e-9)
     assert np.allclose(rates, 0.0)
 
     thrust, rates = env._map_action(np.ones(ACT_DIM))
-    assert thrust == pytest.approx(cfg.max_thrust, abs=1e-9)
-    assert np.allclose(rates, cfg.max_rate)
+    assert thrust == pytest.approx(cfg.max_thrust_n, abs=1e-9)
+    assert np.allclose(rates, cfg.max_body_rate)
 
     thrust, rates = env._map_action(-np.ones(ACT_DIM))
     assert thrust >= 0.0
-    assert thrust == pytest.approx(max(0.0, 2 * cfg.hover_thrust - cfg.max_thrust),
+    assert thrust == pytest.approx(max(0.0, 2 * env.hover_thrust - cfg.max_thrust_n),
                                    abs=1e-9)
-    assert np.allclose(rates, -cfg.max_rate)
+    assert np.allclose(rates, -cfg.max_body_rate)
 
     # Out-of-range actions are clipped, not extrapolated.
-    assert env._map_action(np.full(ACT_DIM, 9.0))[0] == pytest.approx(cfg.max_thrust)
-    assert np.allclose(env._map_action(np.full(ACT_DIM, 9.0))[1], cfg.max_rate)
+    assert env._map_action(np.full(ACT_DIM, 9.0))[0] == pytest.approx(cfg.max_thrust_n)
+    assert np.allclose(env._map_action(np.full(ACT_DIM, 9.0))[1], cfg.max_body_rate)
 
 
 def test_zero_action_holds_a_perfect_hover():

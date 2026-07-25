@@ -9,7 +9,7 @@ Two jobs (RL_NOTES.md section 7):
 It flies on the same 12-dim observation the policy sees — no privileged state —
 so it exercises the real obs pipeline.
 
-Sign conventions, derived from camera.py / stub_physics.py rather than guessed:
+Sign conventions, derived from camera.py / physics.py rather than guessed:
   * body x forward, y LEFT, z up; image +x right, +y up.
   * bbox_x > 0 => target is right of centre. Positive yaw rate is about body +z
     (up), which turns LEFT. So yaw_rate = -k * bbox_x.
@@ -35,8 +35,9 @@ from math import asin, atan, cos, radians, tan
 
 import numpy as np
 
-from dronegym.config_shim import load_config
 from dronegym.env import DroneTargetEnv
+from dronegym.presets import load_config
+from dronegym.state import hover_thrust
 from dronegym.task import FOV_DEG
 
 GAINS = dict(
@@ -62,7 +63,8 @@ def p_policy(obs, cfg, g=GAINS):
     pitch_angle = asin(sin_pitch)
     # Hover needs more thrust once tilted: T = hover / cos(pitch). Expressed in
     # action units, where a[0] = (T - hover) / (max_thrust - hover).
-    hover_frac = cfg.hover_thrust / (cfg.max_thrust - cfg.hover_thrust)
+    hover = hover_thrust(cfg)
+    hover_frac = hover / (cfg.max_thrust_n - hover)
     lean_ff = hover_frac * (1.0 / max(cos(pitch_angle), 0.3) - 1.0)
 
     roll_cmd = g["roll"] * obs[8]   # obs[8] = -sin(roll); drives roll back to level
@@ -124,8 +126,8 @@ def main():
     cfg = load_config(args.config)
     levels = [args.difficulty] if args.difficulty is not None else [0, 1, 2, 3]
 
-    print(f"P-controller baseline — {cfg.name} "
-          f"(uptilt {cfg.cam_angle_deg:.0f} deg, TWR {cfg.max_thrust / cfg.hover_thrust:.1f})")
+    print(f"P-controller baseline — {cfg.name} (uptilt {cfg.cam_angle_deg:.0f} deg, "
+          f"TWR {cfg.max_thrust_n / hover_thrust(cfg):.1f})")
     print(f"{args.episodes} episodes per level\n")
     print(f"{'level':>5} {'success':>8} {'mean steps':>11}  outcomes")
     results = {}
