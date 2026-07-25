@@ -1,0 +1,7 @@
+numpy
+gymnasium
+stable-baselines3
+tensorboard
+pyyaml
+pytest
+rerun-sdk
