@@ -1,6 +1,6 @@
 # DroneGym 🚁
 
-RL training gym for autonomous FPV drones. Configure a drone (prop size, motor KV, camera angle, weight), then train a PPO agent to fly at spherical targets using simulated camera input — a privileged-info bounding box standing in for real computer vision.
+RL training gym for autonomous FPV drones. Configure a drone (prop size, motor KV, camera angle, weight), then train a PPO agent to fly at spherical targets using simulated camera input — a privileged-info bounding box standing in for real computer vision. Targets are either **static** (v1) or **moving on a straight constant-velocity path** for interception training (v2 — see Scenarios).
 
 Built in 6 hours for a hackathon.
 
@@ -47,7 +47,7 @@ DroneGym/
 **Action space** (4,) in [-1, 1]: `[thrust, roll_rate, pitch_rate, yaw_rate]`
 (collective thrust + body rate commands; physics' inner loop tracks the rates)
 
-**Observation space** (12,):
+**Observation space** (14,) — *widened from 12 on 2026-07-24 for the intercept scenario; no models had been trained yet, so there is no compatibility cost, but env.py and runner.py must both build the 14-dim version:*
 
 | idx | value | source |
 |---|---|---|
@@ -57,12 +57,31 @@ DroneGym/
 | 4–6 | body angular rates (rad/s) | physics.py |
 | 7–9 | gravity vector in body frame (attitude) | physics.py |
 | 10–11 | velocity forward, vertical (body frame, m/s) | physics.py |
+| 12–13 | bbox drift rate: d/dt of bbox x, y (units/s, finite difference of consecutive frames; 0 while target not visible) | env.py / runner.py |
 
 **`DroneConfig` fields:** `mass_g`, `prop_diameter_in`, `motor_kv`, `battery_v`, `cam_angle_deg`, `frame_size_mm`
 
 **Physics state** (what `physics.step(state, action, cfg)` takes/returns): position (3), velocity (3), quaternion (4), angular rates (3), motor thrust state (1). `camera.py` and `env.py` consume this, never mutate it.
 
 **Frame conventions** (defined in `camera.py`, physics must match): world frame Z-up; body frame x forward, y left, z up; quaternion `[w, x, y, z]` rotating body vectors into world frame. Camera looks along body +x, tilted up by `cam_angle_deg`; image coords normalized to [-1, 1], (0,0) at center, +x right, +y up.
+
+## Scenarios
+
+### Static target (v1)
+The original scope and still the default: a fixed sphere, drone spawns 7–10 m away facing roughly toward it. Everything above describes this mode.
+
+### Intercept — constant-velocity target (v2, scope added 2026-07-24)
+Train the drone to intercept a target crossing the arena in a straight line at constant speed — counter-UAS style, an interceptor chasing down a Shahed-type fixed-course drone. Shared spec so all three tracks (and their agents) build the same thing:
+
+- **Target motion:** `target_pos(t) = pos0 + vel * t`, `vel` constant for the whole episode, level flight (`vel[2] = 0`).
+- **Per-episode randomization:** speed 2–10 m/s; heading random but constrained so the path passes within ~6 m of the drone spawn; target spawns 12–20 m out.
+- **Observation:** the 14-dim layout above, unchanged between modes. Indices 12–13 (bbox drift rate) exist exactly for this — they let the policy *lead* the intercept instead of tail-chasing.
+- **Termination:** static's hit / crash / timeout, plus `escaped` — target range > 40 m and increasing.
+- **Reward:** same shaping family (closing progress + centering + hit bonus); prefer a closing-velocity term over raw distance delta once the target moves fast.
+- **Curriculum:** train static first, then 2 m/s → 5 m/s → 8–10 m/s, saving a separate checkpoint per stage so the demo can show the progression.
+- **Run JSON format:** `"target"` becomes `{"pos0": [x,y,z], "vel": [vx,vy,0], "radius": r}`. Static runs write `vel: [0,0,0]`. Replays reconstruct the target's path from this.
+
+**Who does what:** johannaresh — target motion + `escaped` termination in env.py, obs indices 12–13, curriculum stages. zsun — GUI scenario picker (static / intercept + target speed), moving-target rendering in both views, run-format update. moterodiaz — no physics changes required.
 
 ## Timeline
 
