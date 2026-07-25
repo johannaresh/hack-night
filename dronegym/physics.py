@@ -74,10 +74,19 @@ def velocity_body(state):
     return quat_rotate(q_inverse, vel(state))
 
 
-def initial_state(cfg):
+def initial_state(cfg, rng=None, pos_spread=1.0, vel_spread=0.5, tilt_spread=0.2):
+    """Build a start state. With rng given, randomize pose/vel for training
+    diversity; rng=None keeps the deterministic level-hover start (env default)."""
     state = np.zeros(14, dtype=float)
     state[QUAT] = [1.0, 0.0, 0.0, 0.0]
     state[MOTOR] = cfg.mass_kg * cfg.gravity
+    if rng is not None:
+        state[POS] = rng.uniform(-pos_spread, pos_spread, size=3)
+        state[VEL] = rng.uniform(-vel_spread, vel_spread, size=3)
+        # Small random tilt as a quaternion perturbation, then renormalize.
+        state[QUAT] = quat_normalize(
+            state[QUAT] + rng.uniform(-tilt_spread, tilt_spread, size=4)
+        )
     return state
 
 
@@ -150,5 +159,17 @@ if __name__ == "__main__":
     before = original.copy()
     step(original, [hover_action, 0.0, 0.0, 0.0], cfg)
     assert np.array_equal(original, before)
+
+    # Domain randomization: knobs move, config stays finite + steppable.
+    from .config import randomize_config
+    rcfg = randomize_config(cfg, rng, pct=0.1)
+    assert rcfg.max_thrust_n != cfg.max_thrust_n
+    assert np.isfinite(rcfg.inertia).all()
+    step(initial_state(rcfg), [hover_action, 0.0, 0.0, 0.0], rcfg)
+
+    # Randomized reset: differs from deterministic start, quaternion stays unit.
+    rstate = initial_state(cfg, rng)
+    assert not np.array_equal(rstate, initial_state(cfg))
+    assert abs(np.linalg.norm(rstate[QUAT]) - 1.0) < 1e-6
 
     print("physics self-check OK")
