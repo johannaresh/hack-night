@@ -33,7 +33,7 @@ SPEEDS = {"0.25x": 0.25, "0.5x": 0.5, "1x": 1.0, "2x": 2.0, "4x": 4.0}
 RUNS_DIR = os.path.join(ROOT, "runs")
 MODEL_DIRS = ("checkpoints", "models")
 
-ISO_W, ISO_H = 580, 540
+ISO_W, ISO_H = 580, 560
 FPV_W, FPV_H = 400, 560
 FPV_SQ = 380
 ATT_W, ATT_H = 270, 560
@@ -778,14 +778,6 @@ def build():
                 dpg.add_button(label="TRAIN MODEL", tag="w_train", width=332,
                                callback=lambda: start_training())
                 dpg.add_text("", tag="w_tstatus", wrap=330)
-                dpg.add_separator()
-                dpg.add_text("REPLAYS", color=(255, 200, 90))
-                dpg.add_combo(("Fastest hit", "Total reward"), tag="w_rank",
-                              label="rank by", width=210, default_value="Fastest hit",
-                              callback=lambda s, a: refresh_runs())
-                dpg.add_listbox([], tag="w_runs", num_items=9, width=332)
-                dpg.add_button(label="PLAY SELECTED", width=332,
-                               callback=lambda: play_selected())
             with dpg.group():
                 with dpg.group(horizontal=True):
                     with dpg.drawlist(width=ISO_W, height=ISO_H, tag="iso_dl"):
@@ -796,10 +788,21 @@ def build():
                         dpg.add_draw_layer(tag="att_layer")
                 with dpg.group(horizontal=True):
                     dpg.add_button(label="Play", tag="w_play", width=72, callback=on_play)
-                    dpg.add_slider_int(tag="w_scrub", width=560, min_value=0,
+                    dpg.add_slider_int(tag="w_scrub", width=1090, min_value=0,
                                        max_value=1, callback=on_scrub)
                     dpg.add_combo(list(SPEEDS), tag="w_speed", width=72,
                                   default_value="1x")
+                dpg.add_spacer(height=4)
+                with dpg.group(horizontal=True):
+                    with dpg.group():
+                        dpg.add_text("REPLAYS", color=(255, 200, 90))
+                        dpg.add_combo(("Fastest hit", "Total reward"), tag="w_rank",
+                                      label="rank by", width=148,
+                                      default_value="Fastest hit",
+                                      callback=lambda s, a: refresh_runs())
+                        dpg.add_button(label="PLAY SELECTED", width=232,
+                                       callback=lambda: play_selected())
+                    dpg.add_listbox([], tag="w_runs", num_items=8, width=1014)
 
     with dpg.handler_registry():
         dpg.add_mouse_down_handler(callback=on_mouse_down)
