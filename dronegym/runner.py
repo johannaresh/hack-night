@@ -60,7 +60,7 @@ class EpisodeRunner:
         self.outcome = None                            # 'hit' | 'crash' | 'timeout'
         self.total_reward = 0.0
         self.closest = self._dist()
-        self.traj = {"pos": [], "quat": [], "bbox": [], "t": []}
+        self.traj = {"pos": [], "quat": [], "bbox": [], "t": [], "act": []}
         self._record_frame()
 
     # -- helpers -------------------------------------------------------------
@@ -79,11 +79,15 @@ class EpisodeRunner:
         return np.concatenate([self.bbox(), s["rates"], g_body,
                                [v_body[0], v_body[2]]]).astype(np.float32)
 
-    def _record_frame(self):
+    def _record_frame(self, action=None):
         self.traj["pos"].append(self.state["pos"].tolist())
         self.traj["quat"].append(self.state["quat"].tolist())
         self.traj["bbox"].append(self.bbox().tolist())
         self.traj["t"].append(round(self.t, 4))
+        # stick commands that produced this frame; frame 0 = at rest
+        act = [-1.0, 0.0, 0.0, 0.0] if action is None else \
+            [float(a) for a in np.clip(np.asarray(action, dtype=float), -1, 1)]
+        self.traj["act"].append(act)
 
     # -- stepping ------------------------------------------------------------
     def step(self):
@@ -109,7 +113,7 @@ class EpisodeRunner:
                  - 0.01 + (100.0 if hit else 0.0) - (50.0 if crash else 0.0))
         self.total_reward += float(r)
 
-        self._record_frame()
+        self._record_frame(action)
         if hit or crash or timeout:
             self.done = True
             self.outcome = "hit" if hit else ("crash" if crash else "timeout")

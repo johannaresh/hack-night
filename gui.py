@@ -30,8 +30,9 @@ RUNS_DIR = os.path.join(ROOT, "runs")
 MODEL_DIRS = ("checkpoints", "models")
 
 ISO_W, ISO_H = 580, 540
-FPV_W, FPV_H = 400, 540
+FPV_W, FPV_H = 400, 560
 FPV_SQ = 380
+MAX_RATE_DEG = np.degrees(getattr(runner.PHYS, "MAX_RATE", 10.0))  # full stick
 
 G = {"mode": "idle", "ep": None, "run": None, "fidx": 0.0, "playing": False,
      "acc": 0.0, "view": None, "grid": (-2, 10, -4, 4), "run_map": {},
@@ -124,7 +125,41 @@ def draw_iso(pos=None, quat=None, target=None, t_radius=0.5, trail=(), flash=Fal
         dpg.draw_arrow(V.px(nose), c, color=(255, 220, 90), thickness=2, size=8, parent=L)
 
 
-def draw_fpv(bbox=None, hud=()):
+def _draw_bar(L, x, y, w, label, frac, text, color, symmetric):
+    """One stick channel: label, bar, value text. frac in [-1,1] (or [0,1])."""
+    bx = x + 34
+    dpg.draw_text((x, y - 7), label, size=13, color=(150, 155, 170), parent=L)
+    dpg.draw_rectangle((bx, y - 6), (bx + w, y + 6), color=(60, 65, 80), parent=L)
+    if symmetric:
+        cx = bx + w / 2
+        dpg.draw_line((cx, y - 6), (cx, y + 6), color=(90, 95, 110), parent=L)
+        dpg.draw_rectangle((min(cx, cx + frac * w / 2), y - 4),
+                           (max(cx, cx + frac * w / 2), y + 4),
+                           fill=color, color=(0, 0, 0, 0), parent=L)
+    else:
+        dpg.draw_rectangle((bx, y - 4), (bx + max(1, frac * w), y + 4),
+                           fill=color, color=(0, 0, 0, 0), parent=L)
+    dpg.draw_text((bx + w + 7, y - 7), text, size=13, color=(200, 205, 215), parent=L)
+
+
+def draw_sticks(L, x0, ty, act):
+    """Throttle / roll / pitch / yaw commands for the current frame."""
+    if act is None:
+        dpg.draw_text((x0, ty), "(no stick data in this run)", size=13,
+                      color=(120, 125, 140), parent=L)
+        return
+    bar_w = FPV_SQ - 34 - 74
+    thr = (float(act[0]) + 1.0) / 2.0
+    _draw_bar(L, x0, ty + 6, bar_w, "THR", thr, f"{thr * 100:3.0f}%",
+              (255, 190, 80, 230), symmetric=False)
+    for i, (name, sgn) in enumerate((("ROL", 1), ("PIT", 1), ("YAW", 1)), start=1):
+        v = float(act[i]) * sgn
+        _draw_bar(L, x0, ty + 6 + 17 * i, bar_w, name, v,
+                  f"{v * MAX_RATE_DEG:+5.0f} deg/s", (0, 200, 255, 230),
+                  symmetric=True)
+
+
+def draw_fpv(bbox=None, hud=(), act=None):
     L = "fpv_layer"
     dpg.delete_item(L, children_only=True)
     x0, y0, sq = 10, 10, FPV_SQ
@@ -157,6 +192,8 @@ def draw_fpv(bbox=None, hud=()):
     for line in hud:
         dpg.draw_text((x0, ty), line, size=14, color=(200, 205, 215), parent=L)
         ty += 19
+    if bbox is not None:                              # idle screen: no sticks
+        draw_sticks(L, x0, ty + 4, act)
 
 
 # --- config panel -------------------------------------------------------------
@@ -339,7 +376,8 @@ def render():
         draw_fpv(ep.traj["bbox"][-1],
                  [f"LIVE   t={ep.t:5.2f}s   dist={d:4.1f}m",
                   f"{ep.cfg['name']}  |  {ep.model_name}",
-                  f"reward {ep.total_reward:8.1f}"])
+                  f"reward {ep.total_reward:8.1f}"],
+                 act=ep.traj["act"][-1])
     elif G["mode"] == "replay" and G["run"]:
         run, tr = G["run"], G["run"]["traj"]
         i = min(int(G["fidx"]), len(tr["pos"]) - 1)
@@ -351,10 +389,12 @@ def render():
             verdict = f"{run.get('outcome', 'miss').upper()}  closest {run.get('closest_approach', 0):.2f}m"
         draw_iso(pos, tr["quat"][i], tgt, run["target"]["radius"],
                  trail=tr["pos"][:i + 1], flash=at_end and run.get("hit", False))
+        acts = tr.get("act")
         draw_fpv(tr["bbox"][i],
                  [f"REPLAY   t={tr['t'][i]:5.2f}s   dist={float(np.linalg.norm(tgt - pos)):4.1f}m",
                   f"{run['drone'].get('name', '?')}  |  {run.get('model', '?')}",
-                  f"{verdict}   reward {run.get('total_reward', 0):.0f}"])
+                  f"{verdict}   reward {run.get('total_reward', 0):.0f}"],
+                 act=acts[i] if acts and i < len(acts) else None)
     else:
         draw_iso()
         draw_fpv(None, ["Configure a drone, pick a trained model, START LIVE RUN.",
@@ -430,6 +470,8 @@ def _inject_smoke_replay():
                     "quat": [[1, 0, 0, 0]] * n,
                     "bbox": [[0.4 * np.sin(i / 20), 0.15 * np.cos(i / 17),
                               0.05 + 0.5 * i / n, 1.0] for i in range(n)],
+                    "act": [[0.2 * np.sin(i / 15) - 0.4, 0.5 * np.sin(i / 9),
+                             0.4 * np.cos(i / 12), 0.6 * np.sin(i / 22)] for i in range(n)],
                     "t": [round(i * 0.02, 3) for i in range(n)]}}
     load_replay(run)
 
