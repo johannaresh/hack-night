@@ -11,7 +11,11 @@ the drone's-eye FPV view (bbox on a synthetic frame), side by side.
 
 import glob
 import os
+import re
+import shutil
+import subprocess
 import sys
+import time
 
 import numpy as np
 import yaml
@@ -379,6 +383,110 @@ def finish_live():
            ok=ep.outcome == "hit")
 
 
+# --- in-GUI training ------------------------------------------------------------
+TRAIN_FPS_EST = 930          # measured on this machine, static5min run
+
+
+def tstatus(msg, ok=True):
+    dpg.set_value("w_tstatus", msg)
+    dpg.configure_item("w_tstatus", color=(140, 220, 140) if ok else (255, 120, 120))
+
+
+def update_est(sender=None, app_data=None):
+    steps = int(dpg.get_value("w_tsteps"))
+    dpg.set_value("w_test",
+                  f"~{steps / TRAIN_FPS_EST / 60.0:.1f} min at ~{TRAIN_FPS_EST} steps/s")
+
+
+def _tail_progress(log_path):
+    """Latest '[throughput] N steps' figure from the training log, or None."""
+    try:
+        with open(log_path, "r", errors="ignore") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 6000))
+            txt = f.read()
+    except OSError:
+        return None
+    steps = None
+    for line in txt.splitlines():
+        if "[throughput]" in line:
+            m = re.search(r"([\d,]+) steps", line)
+            if m:
+                steps = int(m.group(1).replace(",", ""))
+    return steps
+
+
+def start_training():
+    if G.get("train_proc") is not None:
+        return
+    cfg = current_cfg()
+    steps = int(dpg.get_value("w_tsteps"))
+    stamp = time.strftime("%H%M%S")
+    run_name = f"gui_{cfg['name']}_{stamp}"
+
+    if dpg.get_value("cfg_mode") == "Preset":
+        cfg_arg = os.path.join(ROOT, "configs", f"{cfg['name']}.yaml")
+    else:
+        # custom slider values: write a config train.py can load. NOT into
+        # configs/ — presets.all_presets() asserts exactly 5 files there.
+        gui_cfg_dir = os.path.join(ROOT, "runs", "gui_configs")
+        os.makedirs(gui_cfg_dir, exist_ok=True)
+        cfg_arg = os.path.join(gui_cfg_dir, f"{run_name}.yaml")
+        with open(cfg_arg, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+    os.makedirs(os.path.join(ROOT, "runs"), exist_ok=True)
+    log_path = os.path.join(ROOT, "runs", f"{run_name}.log")
+    logf = open(log_path, "w")
+    cmd = [sys.executable, os.path.join(ROOT, "train.py"), "--config", cfg_arg,
+           "--steps", str(steps), "--run-name", run_name, "--difficulty", "0"]
+    flags = 0x08000000 if os.name == "nt" else 0        # CREATE_NO_WINDOW
+    G["train_proc"] = subprocess.Popen(cmd, cwd=ROOT, stdout=logf,
+                                       stderr=subprocess.STDOUT,
+                                       creationflags=flags)
+    G["train_logf"] = logf
+    G["train_meta"] = {"run": run_name, "steps": steps, "t0": time.time(),
+                       "log": log_path, "cfg_name": cfg["name"], "stamp": stamp}
+    dpg.configure_item("w_train", enabled=False)
+    tstatus(f"training {run_name} ({steps:,} steps @ level 0)...")
+
+
+def poll_training():
+    proc = G.get("train_proc")
+    if proc is None:
+        return
+    now = time.time()
+    if now - G.get("train_poll_t", 0.0) < 1.0:
+        return
+    G["train_poll_t"] = now
+    meta = G["train_meta"]
+
+    if proc.poll() is None:
+        done = _tail_progress(meta["log"]) or 0
+        pct = min(99.0, 100.0 * done / meta["steps"])
+        tstatus(f"training... {pct:3.0f}%   {(now - meta['t0']) / 60.0:.1f} min elapsed")
+        return
+
+    rc = proc.returncode
+    G["train_proc"] = None
+    G["train_logf"].close()
+    dpg.configure_item("w_train", enabled=True)
+    if rc != 0:
+        tstatus(f"training failed (exit {rc}) - see runs/{meta['run']}.log", ok=False)
+        return
+    run_dir = os.path.join(ROOT, "runs", meta["run"])
+    src = os.path.join(run_dir, "best_model.zip")       # absent on short runs:
+    if not os.path.isfile(src):                         # eval fires every 50k steps
+        src = os.path.join(run_dir, "final_model.zip")
+    dst = os.path.join(ROOT, "checkpoints",
+                       f"{meta['cfg_name']}_{meta['stamp']}_{meta['steps'] // 1000}k.zip")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(src, dst)
+    scan_models()
+    dpg.set_value("w_model", os.path.relpath(dst, ROOT))
+    tstatus(f"done: {os.path.basename(dst)} selected and ready to fly")
+
+
 # --- replay browser -------------------------------------------------------------
 def refresh_runs():
     ranked = runner.rank_runs(runner.load_runs(RUNS_DIR), dpg.get_value("w_rank"))
@@ -438,6 +546,7 @@ def on_scrub(sender, app_data):
 
 
 def update():
+    poll_training()
     dt_wall = dpg.get_delta_time() or 1 / 60
     spd = SPEEDS.get(dpg.get_value("w_speed"), 1.0)
 
@@ -555,6 +664,15 @@ def build():
                     dpg.add_button(label="START LIVE RUN", callback=lambda: start_live())
                 dpg.add_text("", tag="w_status", wrap=330)
                 dpg.add_separator()
+                dpg.add_text("TRAINING", color=(255, 200, 90))
+                dpg.add_slider_int(tag="w_tsteps", label="steps", width=210,
+                                   min_value=50_000, max_value=1_000_000,
+                                   default_value=280_000, callback=update_est)
+                dpg.add_text("", tag="w_test", color=(150, 155, 170))
+                dpg.add_button(label="TRAIN MODEL", tag="w_train", width=332,
+                               callback=lambda: start_training())
+                dpg.add_text("", tag="w_tstatus", wrap=330)
+                dpg.add_separator()
                 dpg.add_text("REPLAYS", color=(255, 200, 90))
                 dpg.add_combo(("Fastest hit", "Total reward"), tag="w_rank",
                               label="rank by", width=210, default_value="Fastest hit",
@@ -611,6 +729,7 @@ def main():
     on_mode_change()
     scan_models()
     refresh_runs()
+    update_est()
 
     if smoke:
         _inject_smoke_replay()                # new format, moving target
