@@ -19,9 +19,11 @@ DroneGym/
 ├── README.md
 ├── requirements.txt
 ├── configs/                      # zsun — drone presets for the demo
-│   ├── freestyle_5inch.yaml
 │   ├── tiny_whoop.yaml
-│   └── cinelifter.yaml
+│   ├── freestyle_5inch.yaml
+│   ├── cinelifter.yaml
+│   ├── longrange_7inch.yaml
+│   └── longrange_10inch.yaml
 ├── dronegym/
 │   ├── __init__.py
 │   ├── config.py                 # moterodiaz — DroneConfig dataclass: mass, prop_diameter,
@@ -29,8 +31,8 @@ DroneGym/
 │   │                             #   inertia, motor time constant
 │   ├── physics.py                # moterodiaz — rigid-body quadrotor dynamics + inner
 │   │                             #   P rate-controller (acro mode), pure NumPy
-│   ├── camera.py                 # zsun — pinhole projection: drone pose + target position
-│   │                             #   → bbox (x, y, size, visible) in normalized image coords
+│   ├── camera.py                 # zsun — geometry-only bbox (no rendering): drone pose +
+│   │                             #   cam uptilt + target position → bbox (x, y, size, visible)
 │   ├── env.py                    # johannaresh — gymnasium.Env: obs/action/reset/termination
 │   └── rewards.py                # johannaresh — reward shaping, isolated for fast iteration
 ├── train.py                      # johannaresh — SB3 PPO, vectorized envs, checkpointing
@@ -59,6 +61,8 @@ DroneGym/
 **`DroneConfig` fields:** `mass_g`, `prop_diameter_in`, `motor_kv`, `battery_v`, `cam_angle_deg`, `frame_size_mm`
 
 **Physics state** (what `physics.step(state, action, cfg)` takes/returns): position (3), velocity (3), quaternion (4), angular rates (3), motor thrust state (1). `camera.py` and `env.py` consume this, never mutate it.
+
+**Frame conventions** (defined in `camera.py`, physics must match): world frame Z-up; body frame x forward, y left, z up; quaternion `[w, x, y, z]` rotating body vectors into world frame. Camera looks along body +x, tilted up by `cam_angle_deg`; image coords normalized to [-1, 1], (0,0) at center, +x right, +y up.
 
 ## Timeline
 

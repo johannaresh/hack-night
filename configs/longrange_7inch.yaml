@@ -1,0 +1,9 @@
+# Long range 7" — 6S Li-Ion cruiser (Chimera7 / Explorer class)
+# Built for efficient cruising, not snap maneuvers. Moderate KV, extra mass in fuel.
+name: longrange_7inch
+mass_g: 950
+prop_diameter_in: 7.0
+motor_kv: 1300
+battery_v: 22.2
+cam_angle_deg: 20
+frame_size_mm: 300

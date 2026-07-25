@@ -1,0 +1,9 @@
+# Cinelifter — 8" heavy-lift camera rig (with cinema camera payload)
+# Heavy and deliberate. Low KV, big props, barely-there uptilt for smooth footage.
+name: cinelifter
+mass_g: 2200
+prop_diameter_in: 8.0
+motor_kv: 1100
+battery_v: 22.2
+cam_angle_deg: 10
+frame_size_mm: 350

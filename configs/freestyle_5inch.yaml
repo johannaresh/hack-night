@@ -1,0 +1,9 @@
+# Freestyle 5" — 6S 5-inch quad (Apex / Source One class)
+# The baseline FPV experience: high thrust-to-weight, aggressive uptilt.
+name: freestyle_5inch
+mass_g: 650
+prop_diameter_in: 5.1
+motor_kv: 1850
+battery_v: 22.2
+cam_angle_deg: 30
+frame_size_mm: 220

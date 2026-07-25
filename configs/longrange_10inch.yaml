@@ -1,0 +1,9 @@
+# Ultra long range 10" — 6S Li-Ion endurance build
+# Maximum prop disc, minimum KV. Flies like a truck with a lot of momentum.
+name: longrange_10inch
+mass_g: 1500
+prop_diameter_in: 10.0
+motor_kv: 880
+battery_v: 22.2
+cam_angle_deg: 12
+frame_size_mm: 450

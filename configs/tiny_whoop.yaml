@@ -1,0 +1,9 @@
+# Tiny whoop — 65mm 1S micro (Mobula6 / Meteor65 class)
+# Featherweight and slow. Tiny props + screaming KV on 1S = gentle authority.
+name: tiny_whoop
+mass_g: 27
+prop_diameter_in: 1.2
+motor_kv: 22000
+battery_v: 3.7
+cam_angle_deg: 15
+frame_size_mm: 65
