@@ -36,6 +36,7 @@ class DroneConfig:
         ixx_iyy = self.inertia_scale * self.mass_kg * self.arm_m ** 2 / 2.0
         izz = self.inertia_scale * self.mass_kg * self.arm_m ** 2
         self.inertia = np.diag([ixx_iyy, ixx_iyy, izz])
+        self.inertia_inv = np.linalg.inv(self.inertia)
 
 
 def randomize_config(cfg: DroneConfig, rng, pct: float = 0.1) -> DroneConfig:

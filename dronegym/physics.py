@@ -104,9 +104,16 @@ def step(state, action, cfg, dt=1 / 250):
     current_motor = old[MOTOR]
 
     thrust_cmd = (action[0] * 0.5 + 0.5) * cfg.max_thrust_n
-    motor_new = current_motor + (thrust_cmd - current_motor) * dt / cfg.motor_tau_s
+    motor_new = np.clip(
+        current_motor + (thrust_cmd - current_motor) * dt / cfg.motor_tau_s,
+        0.0, cfg.max_thrust_n,
+    )
     rate_cmd = action[1:4] * cfg.max_body_rate
-    angular_accel = cfg.kp_rate * (rate_cmd - body_rate)
+    # kp_rate is in rad/s² per rad/s (accel units); scale to N·m via J so the
+    # knob semantics stay identical to the old P-controller after the inversion.
+    torque_des = cfg.inertia @ (cfg.kp_rate * (rate_cmd - body_rate))
+    gyro_torque = np.cross(body_rate, cfg.inertia @ body_rate)
+    angular_accel = cfg.inertia_inv @ (torque_des - gyro_torque)
 
     thrust_world = quat_rotate(attitude, np.array([0.0, 0.0, motor_new]))
     acceleration = (
