@@ -44,6 +44,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack
 
 from dronegym.presets import load_config
 from dronegym.env import DroneTargetEnv
+from dronegym.runner import InterceptTargetEnv
 from dronegym.task import MAX_EPISODE_STEPS, N_STACK, OBS_DIM
 
 # --- PPO hyperparameters (RL_NOTES.md section 4) -----------------------------
@@ -75,7 +76,8 @@ FPS_REPORT_EVERY = 10_000   # env steps
 FPS_GATE = 2_000            # EXECUTION_PLAN.md gate 4
 
 
-def make_vec_env(cfg_path, n_envs=16, difficulty=0, seed=0):
+def make_vec_env(cfg_path, n_envs=16, difficulty=0, seed=0, scenario="static",
+                  target_speed=None):
     """Build the training/eval env stack. THE SINGLE SOURCE OF TRUTH FOR WRAPPERS.
 
     evaluate.py and viz/replay.py must build their env by calling this function
@@ -109,7 +111,10 @@ def make_vec_env(cfg_path, n_envs=16, difficulty=0, seed=0):
 
     def thunk(i):
         def _f():
-            env = DroneTargetEnv(cfg, difficulty)
+            if scenario == "intercept":
+                env = InterceptTargetEnv(cfg, difficulty, target_speed)
+            else:
+                env = DroneTargetEnv(cfg, difficulty)
             env.reset(seed=seed + i)
             # Monitor sits per-env inside the DummyVecEnv (it is an env-level
             # wrapper) and lifts "success" out of the final info dict, which is
@@ -302,6 +307,12 @@ def parse_args():
     p.add_argument("--difficulty", type=int, default=None, choices=range(MAX_LEVEL + 1),
                    help="pin the curriculum at this level and disable the "
                         "curriculum callback (debugging); omit for the normal run")
+    p.add_argument("--scenario", choices=("static", "intercept"), default="static",
+                   help="static target, or intercept (constant-velocity target "
+                        "with escape termination; see dronegym.runner)")
+    p.add_argument("--target-speed", type=float, default=None,
+                   help="intercept scenario only: fixed target speed m/s "
+                        "(omit for random 2-10 m/s per episode)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--torch-threads", type=int, default=1,
                    help="torch intra-op threads. 1 is faster here (~+12%% measured) "
@@ -324,11 +335,13 @@ def main():
     start_level = 0 if curriculum else args.difficulty
 
     venv = make_vec_env(args.config, n_envs=args.n_envs,
-                        difficulty=start_level, seed=args.seed)
+                        difficulty=start_level, seed=args.seed,
+                        scenario=args.scenario, target_speed=args.target_speed)
     # Separate deterministic env for best_model selection. Its seed is far from
     # the training seeds so eval episodes are genuinely held out.
     eval_venv = make_vec_env(args.config, n_envs=EVAL_N_ENVS,
-                             difficulty=start_level, seed=EVAL_SEED)
+                             difficulty=start_level, seed=EVAL_SEED,
+                             scenario=args.scenario, target_speed=args.target_speed)
 
     print(f"config      : {args.config}")
     print(f"run dir     : {run_dir}")
