@@ -60,11 +60,11 @@ def quat_integrate(q, omega, dt):
     return quat_normalize(np.array([w, x, y, z]) + q_dot * dt)
 
 
-def gravity_body(state):
-    """Express standard world gravity in the vehicle body frame."""
+def gravity_body(state, gravity: float):
+    """Express world gravity in the vehicle body frame."""
     q = quat(state)
     q_inverse = q * np.array([1.0, -1.0, -1.0, -1.0])
-    return quat_rotate(q_inverse, np.array([0.0, 0.0, -9.81]))
+    return quat_rotate(q_inverse, np.array([0.0, 0.0, -gravity]))
 
 
 def velocity_body(state):
@@ -84,7 +84,8 @@ def initial_state(cfg):
 def step(state, action, cfg, dt=1 / 250):
     """Advance the dynamics one timestep, without mutating state."""
     old = np.asarray(state, dtype=float)
-    action = np.asarray(action, dtype=float)
+    # RL policies routinely emit slightly out-of-range actions; clamp to contract.
+    action = np.clip(np.asarray(action, dtype=float), -1.0, 1.0)
     result = old.copy()
 
     position = old[POS].copy()
