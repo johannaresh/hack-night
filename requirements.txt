@@ -1,1 +1,6 @@
 numpy
+pyyaml
+dearpygui
+gymnasium
+stable-baselines3
+rerun-sdk
