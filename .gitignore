@@ -19,3 +19,7 @@ logs/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Web demo assets must ship to Streamlit Cloud (override runs/ and *.zip above)
+!assets/model/best_model.zip
+
