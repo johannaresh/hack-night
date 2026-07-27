@@ -1,4 +1,4 @@
-# CPU-only torch, so Streamlit Cloud doesn't pull the ~2GB CUDA build.
+# CPU-only torch, so a cloud build doesn't pull the ~2GB CUDA build.
 # Harmless locally (Windows/macOS already resolve the CPU wheel).
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
@@ -8,9 +8,9 @@ pyyaml
 gymnasium
 stable-baselines3
 
-# Web demo (streamlit_app.py)
-streamlit
-plotly
+# Web app (server.py + web/) — FastAPI backend, static canvas frontend
+fastapi
+uvicorn[standard]
 
 # RL workflow / desktop GUI (not needed by the web app, kept for local dev)
 tensorboard

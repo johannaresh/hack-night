@@ -1,0 +1,15 @@
+.git
+.venv
+__pycache__
+*.pyc
+runs
+logs
+checkpoints
+.pytest_cache
+tests
+MD CONTEXT
+*.md
+gui.py
+train.py
+baseline_p.py
+requirements.txt

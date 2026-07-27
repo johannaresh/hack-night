@@ -1,0 +1,48 @@
+/* Hallmark · app-scope (tool UI) · genre: atmospheric/technical
+ * theme: custom "Ground Station" · paper oklch(16% .015 255) dark · accent oklch(74% .16 55) amber
+ * display: mono-forward telemetry · secondary cyan oklch(76% .13 225) · signal green oklch(87% .2 150)
+ * Locked tokens — every colour/font in the app references these by name.
+ */
+:root {
+  /* paper + panels */
+  --color-paper:   oklch(15.5% 0.015 255);   /* page background */
+  --color-panel:   oklch(19% 0.016 255);     /* sidebar / cards */
+  --color-panel-2: oklch(22% 0.016 255);     /* inputs / raised */
+  --color-viewport: oklch(13% 0.014 255);    /* instrument black */
+  --color-line:    oklch(30% 0.014 255);     /* hairline borders */
+  --color-line-2:  oklch(38% 0.016 255);     /* hover borders */
+
+  /* ink */
+  --color-ink:     oklch(88% 0.012 250);
+  --color-ink-dim: oklch(70% 0.014 250);
+  --color-muted:   oklch(58% 0.016 252);
+  --color-faint:   oklch(45% 0.016 252);
+
+  /* signal palette (matches gui.py) */
+  --color-amber:   oklch(74% 0.16 55);       /* primary accent  #ff8c32 */
+  --color-amber-2: oklch(80% 0.14 70);       /* headers         #ffb454 */
+  --color-cyan:    oklch(76% 0.13 225);      /* rates / data    #00c8ff */
+  --color-green:   oklch(87% 0.20 150);      /* HIT / success   #50ff78 */
+  --color-red:     oklch(70% 0.19 22);       /* fault           #ff6a6a */
+  --color-amber-glow: oklch(74% 0.16 55 / 0.16);
+  --color-cyan-glow:  oklch(76% 0.13 225 / 0.14);
+
+  /* type */
+  --font-mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+
+  --text-xs: 11px; --text-sm: 12px; --text-base: 13px; --text-md: 14px;
+  --text-lg: 16px; --text-xl: 19px; --text-2xl: 24px;
+  --track-wide: 0.14em; --track-wider: 0.22em;
+
+  /* space (4pt) */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px;
+
+  /* motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms; --dur-mid: 220ms;
+
+  --radius: 7px; --radius-sm: 5px;
+}

@@ -1,0 +1,12 @@
+# Lean web-app deps only (server.py + web/). Used by the Dockerfile so a cloud
+# build skips the desktop/RL extras (dearpygui, tensorboard, rerun-sdk).
+# CPU-only torch so the image doesn't pull the ~2GB CUDA build.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+numpy
+pyyaml
+gymnasium
+stable-baselines3
+fastapi
+uvicorn[standard]

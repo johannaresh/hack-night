@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DroneGym — ground station</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%230d1016'/%3E%3Ccircle cx='50' cy='50' r='24' fill='none' stroke='%23ff8c32' stroke-width='6'/%3E%3Ccircle cx='50' cy='50' r='6' fill='%2300c8ff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/tokens.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">🛰</span>
+      <span class="name">DRONEGYM</span>
+      <span class="ver">v2 · ground station</span>
+    </div>
+    <span class="tagline">PPO drone-chase policy — trained and flown live, in the browser</span>
+    <div class="leds">
+      <span class="led-row"><span class="led on"></span>sim</span>
+      <span class="led-row"><span class="led amber"></span>policy</span>
+      <span class="led-row"><span class="led" id="led-train"></span>train</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <section>
+        <h3>Airframe</h3>
+        <div class="seg" id="cfgMode">
+          <button data-val="Preset" class="on">Preset</button>
+          <button data-val="Custom">Custom</button>
+        </div>
+        <label class="fld" id="presetRow">
+          <span>preset</span>
+          <select id="preset"></select>
+        </label>
+        <div id="customFields" hidden>
+          <label class="fld"><span>mass <b id="massV"></b> g</span><input type="range" id="mass" min="20" max="3000" step="10"></label>
+          <label class="fld"><span>prop <b id="propV"></b> in</span><input type="range" id="prop" min="1" max="12" step="0.1"></label>
+          <label class="fld"><span>motor <b id="kvV"></b> kv</span><input type="range" id="kv" min="700" max="26000" step="10"></label>
+          <label class="fld"><span>battery</span><select id="battery"></select></label>
+          <label class="fld"><span>cam uptilt <b id="camV"></b>°</span><input type="range" id="cam" min="0" max="45" step="1"></label>
+          <label class="fld"><span>frame <b id="frameV"></b> mm</span><input type="range" id="frame" min="60" max="500" step="5"></label>
+        </div>
+      </section>
+
+      <section>
+        <h3>Scenario</h3>
+        <div class="seg" id="scen">
+          <button data-val="Static" class="on">Static</button>
+          <button data-val="Intercept">Intercept</button>
+        </div>
+        <label class="fld" id="tspeedRow" hidden>
+          <span>target speed <b id="tspeedV"></b> m/s</span>
+          <input type="range" id="tspeed" min="2" max="10" step="0.5" value="5">
+        </label>
+      </section>
+
+      <section>
+        <h3>Checkpoint</h3>
+        <label class="fld"><span>model</span><select id="model"></select></label>
+        <button id="runlive" class="primary">🚀 Run live</button>
+        <p id="status" class="status"></p>
+      </section>
+
+      <section class="grow">
+        <h3>Replays</h3>
+        <label class="fld"><span>rank by</span>
+          <select id="rank"><option>Fastest hit</option><option>Total reward</option></select>
+        </label>
+        <div id="runlist" class="runlist"></div>
+      </section>
+    </aside>
+
+    <main>
+      <div class="tabs">
+        <button id="tab-fly" class="on">▸ Flight</button>
+        <button id="tab-train">▸ Training</button>
+      </div>
+
+      <!-- FLIGHT -->
+      <section id="view-fly" class="view">
+        <p id="srcline" class="srcline"></p>
+        <div class="viewport hud"><canvas id="dg-cv" width="1280" height="576"></canvas></div>
+        <div class="controls">
+          <button id="dg-play">&#9654; Play</button>
+          <input id="dg-scrub" type="range" min="0" max="1" value="0" step="1">
+          <span id="dg-time">0.00s</span>
+          <select id="dg-speed"><option>0.25x</option><option>0.5x</option><option selected>1x</option><option>2x</option><option>4x</option></select>
+        </div>
+        <details class="about">
+          <summary>How this works</summary>
+          <p><b>Live flight</b> is computed by <code>dronegym.runner.EpisodeRunner</code> — the same env used in
+          training — then animated on the canvas. <b>WORLD</b> is the isometric view (cyan trail, red front
+          arms, yellow nose, orange target); <b>FPV CAMERA</b> shows the target's bounding box in the drone's-eye
+          frame plus the stick channels; <b>ATTITUDE</b> is pure orientation.</p>
+          <p>The policy was trained on <code>freestyle_5inch</code>; other airframes show how it transfers
+          (imperfectly) to different physics.</p>
+        </details>
+      </section>
+
+      <!-- TRAINING -->
+      <section id="view-train" class="view" hidden>
+        <div class="train-top">
+          <span class="field">steps
+            <select id="steps">
+              <option value="20000">20k · ~20s</option>
+              <option value="50000" selected>50k · ~45s</option>
+              <option value="100000">100k · ~90s</option>
+              <option value="200000">200k · ~3min</option>
+            </select>
+          </span>
+          <button id="trainbtn" class="train-btn">▶ Start training</button>
+          <span id="trainstatus" class="mono" style="color:var(--color-muted)"></span>
+        </div>
+        <div class="progress"><div id="trainbar"></div></div>
+        <div class="viewport hud"><canvas id="train-chart" width="1280" height="360"></canvas></div>
+        <div class="telem">
+          <div class="cell"><div class="k">iteration</div><div class="v" id="m-iter">—</div></div>
+          <div class="cell"><div class="k">env steps</div><div class="v" id="m-steps">—</div></div>
+          <div class="cell"><div class="k">steps / s</div><div class="v cyan" id="m-fps">—</div></div>
+          <div class="cell"><div class="k">ep reward</div><div class="v amber" id="m-reward">—</div></div>
+          <div class="cell"><div class="k">curriculum</div><div class="v" id="m-level">—</div></div>
+          <div class="cell"><div class="k">success</div><div class="v green" id="m-success">—</div></div>
+        </div>
+        <p class="train-note" id="trainnote">Trains a fresh PPO policy live (<code>freestyle_5inch</code>, 8 envs, the real
+          <code>train.py</code> loop) and streams episode reward per rollout. Watch it climb and the curriculum
+          promote; when it finishes the checkpoint drops into the picker.</p>
+      </section>
+    </main>
+  </div>
+
+  <script src="/viz.js"></script>
+  <script src="/train.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
