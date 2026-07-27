@@ -146,3 +146,8 @@ Thrust, inertia, and motor lag are derived from this geometry in
 | **zsun** | fake-CV camera, GUI (views, scenario editor, in-GUI training, import/export, replays), runner/env bridge, presets |
 | **moterodiaz** | physics engine, DroneConfig derivations, intercept training flags |
 | **johannaresh** | RL environment, reward design, curriculum, PPO pipeline, test suites |
+
+## Demo
+https://youtu.be/VOcuHL_xHdE?is=YxhGbQVfaHlQhdCG
+
+
