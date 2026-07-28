@@ -2,6 +2,8 @@
 
 🏆🥇Night Hack III by Founders, Inc. Winning Project :)
 
+https://hack-night.onrender.com/
+
 An RL training gym for autonomous FPV drones, built in one hackathon night.
 Configure a drone (prop size, motor KV, battery, camera uptilt, weight, frame),
 train a PPO policy to fly at a spherical target using only what an onboard
